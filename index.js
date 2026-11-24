@@ -25,14 +25,14 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import {
-  NEXT_PACKAGE_NAME,
+  LEGACY_PACKAGE_NAME,
   PACKAGE_NAME,
   describeSelfInstall,
   findPnpm,
   isDevSpec,
   readBundleSelection,
   readProfileManifest,
-  renameSelf,
+  withoutLegacy,
   userDataPaths,
   withSelf,
   withoutSelf,
@@ -107,6 +107,12 @@ export function installedVersion(packageRoot) {
 }
 
 /** 素材路由（页面侧用根相对路径引用，与参考实现一致，桌面壳同样可达）。 */
+// 路由前缀保留旧名，**不是漏改**：它是素材 URL 的稳定前缀（已经写进缓存、书签、
+// 以及宿主里正在播的 <video src>），改它对用户没有任何可见收益，却让一轮更新里的
+// 旧页面打到 404。插件的身份在包名 / patch 名 / 模块 id 三处，那三处才是必须一致的。
+// 路由前缀保留旧名，**不是漏改**：它是素材 URL 的稳定前缀（已经写进缓存、书签、
+// 以及宿主里正在播的 <video src>），改它对用户没有任何可见收益，却让一轮更新里的
+// 旧页面打到 404。插件的身份在包名 / patch 名 / 模块 id 三处，那三处才是必须一致的。
 export const ASSET_ROUTE = '/dsh-startup-animation/asset'
 
 /** 管理路由：GET 状态 / POST 上传或开关 / DELETE 恢复默认。 */
@@ -201,7 +207,7 @@ export async function checkForUpdate(options) {
     const slug = options.repoUrl.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '')
     const headers = {
       // GitHub 要求带 UA；Accept 限定版本，避免拿到 HTML 错误页。
-      'User-Agent': `dsh-plugin-startup-animation/${current}`,
+      'User-Agent': `dsh-ui-stage/${current}`,
       Accept: 'application/vnd.github+json',
     }
     try {
@@ -572,7 +578,7 @@ export function readPetPack(packageRoot, dirName) {
 }
 
 /** 仓库主页（更新提示与"查看更新"链接的唯一来源）。 */
-export const REPO_URL = 'https://github.com/WWFZS/dsh-plugin-startup-animation'
+export const REPO_URL = 'https://github.com/WWFZS/dsh-ui-stage'
 
 /**
  * 更新时喂给 pnpm 的目标：Release 的 tgz 直链。
@@ -581,7 +587,7 @@ export const REPO_URL = 'https://github.com/WWFZS/dsh-plugin-startup-animation'
  * 实测同一个网络下 tgz 约 20 秒、git 要近 3 分钟且经常被掐断。tgz 是打包好的
  * 发布产物，体积更小、路径更短、也不依赖 git。
  */
-export const UPDATE_SPEC = `${REPO_URL}/releases/latest/download/dsh-plugin-startup-animation.tgz`
+export const UPDATE_SPEC = `${REPO_URL}/releases/latest/download/dsh-ui-stage.tgz`
 
 /**
  * 允许 `update` 动作使用的 spec 白名单。
@@ -591,7 +597,9 @@ export const UPDATE_SPEC = `${REPO_URL}/releases/latest/download/dsh-plugin-star
  * @returns {boolean} 是否允许。
  */
 export function isAllowedUpdateSpec(spec) {
-  return spec === UPDATE_SPEC || /^github:WWFZS\/dsh-plugin-startup-animation$/.test(spec)
+  // 只认自己的直链与自己的 github 简写：旧名那个仓库现在是**占位仓库**（没有代码），
+  // 放行它只会装出一个空壳。
+  return spec === UPDATE_SPEC || /^github:WWFZS\/dsh-ui-stage$/.test(spec)
 }
 
 /** 注入到页面的配置全局名。 */
@@ -2144,112 +2152,90 @@ export async function updateSelf(options) {
 }
 
 /**
- * 改名搬家：把老用户从 `dsh-plugin-startup-animation` 搬到 `dsh-ui-stage`。
+ * 清扫改名遗留：把旧包（`dsh-plugin-startup-animation`）从 profile 里摘干净。
  *
- * 这是 1.35.0（最后一个用旧名的版本）的唯一职责。它不需要用户点任何按钮 ——
- * 客户端加载时会静默调一次，客户端只在新包**真的装上**之后才提示重启。
+ * 谁会产生这个遗留：跨过 1.35.0、直接手动粘贴新仓库地址装 2.0.0 的人。
+ * 宿主的插件管理器在装包时会自动把它加进 `bundles`，于是**新旧两个插件同时激活**——
+ * 两层壁纸、两只宠物，用户还看不出是配置问题。
  *
- * 顺序是这里唯一重要的设计：
- *   1. `pnpm add 新名` —— 失败就**当什么都没发生**（旧包还在、bundles 没动），
- *      用户继续用老版本，下次启动再试。所以"新包还没发布"是安全状态。
- *   2. 改 profile 清单（依赖键 + bundles，见 `renameSelf`）—— 从这一刻起，
- *      平台认为"生效的是新包"。所以它必须排在 add 成功之后。
- *   3. `pnpm remove 旧名` —— **best-effort**。删不掉（正被 DSH 占着）只留下
- *      一份死文件，不影响功能：bundles 里已经只有新名，旧包不会被激活。
- *   4. 清 `node_modules/旧名` 的联接残留 —— 不干净的话，用户下次安装会撞
- *      EPERM，被宿主报成"没有写入权限"。
+ * 顺序和搬家相反，这里**先改 bundles**：
+ * 一旦 bundles 里只剩新名，双份激活就当场止血；后面 pnpm 删不删得掉都只是"文件残留"，
+ * 不影响功能。这比"先删依赖"安全得多（删依赖失败时 bundles 还带着旧名 = 继续双份）。
  *
- * 开发安装（`link:` / `file:`）**一律不迁移**：那是维护者在调源码，
- * 搬走等于把开发链接换成 npm 上的正式包。
+ * 本地目录安装（`link:` / `file:`）的旧包**不碰**：那是维护者在调源码，
+ * 删掉等于把他正在改的那份代码从 profile 里摘走。
  *
  * @param {{ profileDir: string }} options 位置。
- * @returns {Promise<{ ok: boolean, migrated: boolean, restartRequired: boolean, message: string, details?: string }>} 结果。
+ * @returns {Promise<{ ok: boolean, dropped: boolean, restartRequired: boolean, message: string, details?: string }>} 结果。
  */
-export async function migrateSelf(options) {
+export async function removeLegacySelf(options) {
   const profileDir = options.profileDir
   const manifest = readProfileManifest(profileDir)
   if (manifest === undefined) {
-    return { ok: false, migrated: false, restartRequired: false, message: '无法读取 profile 的 package.json' }
+    return { ok: false, dropped: false, restartRequired: false, message: '无法读取 profile 的 package.json' }
   }
-
-  const dependencies = manifest.dependencies
-  const hasNext =
-    typeof dependencies === 'object' && dependencies !== null && typeof dependencies[NEXT_PACKAGE_NAME] === 'string'
-  if (hasNext) {
-    // 已经搬过了（可能是上次搬完没重启）。静默返回，客户端不提示。
-    return { ok: true, migrated: false, restartRequired: false, message: `已经是 ${NEXT_PACKAGE_NAME}` }
-  }
-
   const state = describeSelfInstall(manifest)
-  if (!state.installed) {
-    return { ok: false, migrated: false, restartRequired: false, message: '本插件不在当前 profile 的依赖里' }
+  if (state.legacy === undefined) {
+    return { ok: true, dropped: false, restartRequired: false, message: '没有旧包残留' }
   }
-  if (isDevSpec(state.spec)) {
-    return { ok: true, migrated: false, restartRequired: false, message: '本地目录安装，不自动迁移' }
+  if (isDevSpec(state.legacy)) {
+    return { ok: true, dropped: false, restartRequired: false, message: '旧包是本地目录安装，不自动删除' }
   }
 
-  // ① 装新包。失败 = 安全退出（新名还没发布时就是这个分支，老用户原地不动）。
-  const added = await runProfilePnpm(profileDir, ['add', NEXT_PACKAGE_NAME])
-  if (added.code !== 0) {
-    return {
-      ok: false,
-      migrated: false,
-      restartRequired: false,
-      message: `安装 ${NEXT_PACKAGE_NAME} 失败（新包可能还没发布）`,
-      details: added.output.slice(-1500),
+  // ① 先从激活列表里摘掉（止血）。
+  const bundles = readBundleSelection(manifest)
+  const nextBundles = bundles.filter((name) => name !== LEGACY_PACKAGE_NAME)
+  if (nextBundles.length !== bundles.length) {
+    writeBundleSelection(manifest, nextBundles)
+    try {
+      writeProfileManifest(profileDir, manifest)
+    } catch (error) {
+      return { ok: false, dropped: false, restartRequired: false, message: `无法更新 profile 清单：${describe(error)}` }
     }
   }
 
-  // ② 改清单：bundles 换名 + 依赖键兜底。
+  // ② 删依赖与文件。
+  const removed = await runProfilePnpm(profileDir, ['remove', LEGACY_PACKAGE_NAME])
+  const link = await cleanupLinkedInstall(profileDir, LEGACY_PACKAGE_NAME)
+
+  // ③ 兜底：pnpm 失败时把依赖键也删掉（清干净配置，剩下的文件下次 install 会被 prune）。
   const after = readProfileManifest(profileDir) ?? manifest
-  renameSelf(after)
-  try {
-    writeProfileManifest(profileDir, after)
-  } catch (error) {
-    return {
-      ok: false,
-      migrated: false,
-      restartRequired: true,
-      message: `新包已装好，但没能改 profile 清单：${describe(error)}`,
+  if (withoutLegacy(after).changed) {
+    try {
+      writeProfileManifest(profileDir, after)
+    } catch {
+      /* 配置清理失败不影响功能：bundles 已经只剩新名 */
     }
   }
-
-  // ③ 删旧包（best-effort）。
-  const removed = await runProfilePnpm(profileDir, ['remove', PACKAGE_NAME])
-
-  // ④ 清联接残留。
-  const link = await cleanupLinkedInstall(profileDir, PACKAGE_NAME)
 
   const leftovers = removed.code !== 0 || link.blocked
   return {
     ok: true,
-    migrated: true,
+    dropped: true,
     restartRequired: true,
     message: leftovers
-      ? `已切到 ${NEXT_PACKAGE_NAME}，重启 DSH 后生效。旧包的文件还占着，重启后会自动清掉。`
-      : `已切到 ${NEXT_PACKAGE_NAME}，重启 DSH 后生效。`,
+      ? '旧插件已从启用列表移除；文件还占着，重启后会自动清掉。'
+      : '旧插件已清除，重启 DSH 后完全生效。',
   }
 }
 
 /**
  * 本插件在当前 profile 里的安装形态（供设置页显示按钮用）。
  *
- * `next` 是"该不该改名搬家"的**唯一判据**，由宿主算、客户端照做：
+ * `legacy` 是"有没有旧包残留要清"的**唯一判据**，由宿主算、客户端照做：
  * 客户端不该自己判断包名 —— 那等于把同一套策略写两份。
  *
  * @param {{ profileDir: string }} options 位置。
- * @returns {{ installed: boolean, selected: boolean, spec: string | undefined, next: string | null }} 安装形态。
+ * @returns {{ installed: boolean, selected: boolean, spec: string | undefined, legacy: string | null }} 安装形态。
  */
 export function selfInstallState(options) {
   const manifest = readProfileManifest(options.profileDir)
   if (manifest === undefined) return { installed: false, selected: false, spec: undefined, next: null }
   const state = describeSelfInstall(manifest)
-  const dependencies = manifest.dependencies
-  const hasNext =
-    typeof dependencies === 'object' && dependencies !== null && typeof dependencies[NEXT_PACKAGE_NAME] === 'string'
-  // 还在旧名下、新名没装、且不是本地目录安装 → 让客户端去搬。
-  const next = state.installed && !hasNext && !isDevSpec(state.spec) ? NEXT_PACKAGE_NAME : null
-  return { installed: state.installed, selected: state.selected, spec: state.spec, next }
+  // 旧包的痕迹还在（且不是本地目录安装）→ 让客户端去清。本地目录安装是维护者的开发链接，
+  // 交给他自己处理，插件不替他删。
+  const legacy = state.legacy !== undefined && !isDevSpec(state.legacy) ? LEGACY_PACKAGE_NAME : null
+  return { installed: state.installed, selected: state.selected, spec: state.spec, legacy }
 }
 
 /**
@@ -2963,10 +2949,10 @@ export function apply(ctx) {
                         .catch((error) => reply(res, 500, { ok: false, message: describe(error) }))
                       return
                     }
-                    if (action === 'migrate') {
-                      void migrateSelf({ profileDir: currentProfileDir() })
+                    if (action === 'dropLegacy') {
+                      void removeLegacySelf({ profileDir: currentProfileDir() })
                         .then((result) => {
-                          reply(res, result.ok || result.migrated ? 200 : 400, result)
+                          reply(res, result.ok ? 200 : 400, result)
                         })
                         .catch((error) => reply(res, 500, { ok: false, message: describe(error) }))
                       return

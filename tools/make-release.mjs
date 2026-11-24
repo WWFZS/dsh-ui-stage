@@ -216,7 +216,7 @@ console.log(`\n检查通过：包名 "${manifest.name}"、patch、client id 一�
     fs.rmSync(packDir, { recursive: true, force: true })
 
     const repoUrl = manifest.repository?.url ?? ''
-    const slug = /github\.com[/:]([^/]+\/[^/.]+)/.exec(repoUrl)?.slice(1, 3).join('/') ?? 'WWFZS/dsh-plugin-startup-animation'
+    const slug = /github\.com[/:]([^/]+\/[^/.]+)/.exec(repoUrl)?.slice(1, 3).join('/') ?? 'WWFZS/dsh-ui-stage'
     const digest = crypto.createHash('sha256').update(fs.readFileSync(assetPath)).digest('hex')
 
     console.log(`\ntarball：dist/${assetName}  ${(fs.statSync(assetPath).size / 1048576).toFixed(2)} MB`)

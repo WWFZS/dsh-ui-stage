@@ -12,10 +12,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  NEXT_PACKAGE_NAME,
+  LEGACY_PACKAGE_NAME,
   PACKAGE_NAME,
   isDevSpec,
-  renameSelf,
+  withoutLegacy,
 } from './lib/self-manage.mjs'
 import {
   assertBuiltinFile,
@@ -913,7 +913,8 @@ await check('cleanupLinkedInstall：只删链接，绝不动真实目录与目�
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-profile-'))
   const nodeModules = path.join(profile, 'node_modules')
   fs.mkdirSync(nodeModules, { recursive: true })
-  const linkPath = path.join(nodeModules, 'dsh-plugin-startup-animation')
+  // 用当前包名：改名后清理的目标就是它（旧名那份由 removeLegacySelf 单独处理）。
+  const linkPath = path.join(nodeModules, PACKAGE_NAME)
   const source = path.join(profile, 'source-repo')
   fs.mkdirSync(source, { recursive: true })
   fs.writeFileSync(path.join(source, 'index.js'), '// source\n')
@@ -937,55 +938,54 @@ await check('cleanupLinkedInstall：只删链接，绝不动真实目录与目�
   fs.rmSync(profile, { recursive: true, force: true })
 })
 
-await check('改名搬家：bundles 里旧名原地换成新名，依赖键两边都在时删旧的', () => {
-  // 场景：pnpm add 了新名、remove 旧名失败了 —— 清单里两个依赖键都在。
+await check('清旧名：依赖键与 bundles 一起清干净，别的包一个不碰', () => {
+  // 场景：跳过 1.35.0、手动装了新包 —— profile 里新旧都在。
   const manifest = {
-    dependencies: { [PACKAGE_NAME]: '^1.35.0', [NEXT_PACKAGE_NAME]: '^2.0.0', 'other-pkg': '1.0.0' },
-    dsh: { profile: { bundles: ['billion-context', PACKAGE_NAME, 'dsh-ops'] } },
+    dependencies: { [LEGACY_PACKAGE_NAME]: '^1.35.0', [PACKAGE_NAME]: '^2.0.0', 'other-pkg': '1.0.0' },
+    dsh: { profile: { bundles: ['billion-context', PACKAGE_NAME, LEGACY_PACKAGE_NAME, 'dsh-ops'] } },
   }
-  const result = renameSelf(manifest)
+  const result = withoutLegacy(manifest)
   assert.equal(result.changed, true, '没报告改动')
-  assert.equal(PACKAGE_NAME in manifest.dependencies, false, '旧依赖键没删掉')
-  assert.equal(manifest.dependencies[NEXT_PACKAGE_NAME], '^2.0.0', '新依赖键被改坏了')
+  assert.equal(LEGACY_PACKAGE_NAME in manifest.dependencies, false, '旧依赖键没删掉')
+  assert.equal(manifest.dependencies[PACKAGE_NAME], '^2.0.0', '新依赖键被改坏了')
   assert.equal(manifest.dependencies['other-pkg'], '1.0.0', '动了别的包')
-  // 新名必须**顶在旧名原来的位置**：bundles 顺序就是加载顺序，换名不该把它挪到最后。
-  assert.deepEqual(manifest.dsh.profile.bundles, ['billion-context', NEXT_PACKAGE_NAME, 'dsh-ops'])
-  assert.equal(renameSelf(manifest).changed, false, '再跑一次应该是幂等的')
+  // 旧名必须从**激活列表**里消失：留着它 = 两个插件同时激活（两层壁纸、两只宠物）。
+  assert.deepEqual(manifest.dsh.profile.bundles, ['billion-context', PACKAGE_NAME, 'dsh-ops'])
+  assert.equal(withoutLegacy(manifest).changed, false, '再跑一次应该是幂等的')
 })
 
-await check('改名搬家：旧名不在 bundles 里时不去凭空加新名', () => {
-  const manifest = { dependencies: { [NEXT_PACKAGE_NAME]: '^2.0.0' }, dsh: { profile: { bundles: ['dsh-ops'] } } }
-  const result = renameSelf(manifest)
-  assert.equal(result.changed, false, '用户本来没启用它，不该被塞回列表')
-  assert.deepEqual(manifest.dsh.profile.bundles, ['dsh-ops'])
+await check('清旧名：只剩 bundles 里还留着旧名（pnpm 没删掉依赖）也要摘干净', () => {
+  const manifest = { dependencies: {}, dsh: { profile: { bundles: [LEGACY_PACKAGE_NAME, PACKAGE_NAME] } } }
+  assert.equal(withoutLegacy(manifest).changed, true, 'bundles 里的旧名没被摘掉')
+  assert.deepEqual(manifest.dsh.profile.bundles, [PACKAGE_NAME])
 })
 
-await check('isDevSpec：本地目录安装不参与自动改名', () => {
+await check('isDevSpec：本地目录安装不参与自动清理', () => {
   for (const spec of ['link:D:/x', 'file:../x', 'portal:/x', 'workspace:*']) {
     assert.equal(isDevSpec(spec), true, `${spec} 应判为本地安装`)
   }
-  for (const spec of ['^1.34.0', '1.35.0', 'npm:dsh-plugin-startup-animation@1.35.0', undefined, '']) {
+  for (const spec of ['^1.34.0', '1.35.0', 'npm:dsh-ui-stage@2.0.0', undefined, '']) {
     assert.equal(isDevSpec(spec), false, `${String(spec)} 不该判为本地安装`)
   }
 })
 
-await check('selfInstallState.next：只在"旧名 + 非本地安装 + 新名未装"时给出', async () => {
+await check('selfInstallState.legacy：旧包残留才给，本地目录安装不算', async () => {
   const { selfInstallState } = await import('./index.js')
   const make = (dependencies) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-next-'))
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-legacy-'))
     fs.writeFileSync(
       path.join(dir, 'package.json'),
       JSON.stringify({ dependencies, dsh: { profile: { bundles: [PACKAGE_NAME] } } }),
     )
     return dir
   }
-  const npmDir = make({ [PACKAGE_NAME]: '^1.34.0' })
-  assert.equal(selfInstallState({ profileDir: npmDir }).next, NEXT_PACKAGE_NAME, '正常安装应该给出搬家目标')
-  const linkDir = make({ [PACKAGE_NAME]: 'link:D:/DeepSeek启动动画' })
-  assert.equal(selfInstallState({ profileDir: linkDir }).next, null, '本地目录安装不该被安排搬家')
-  const doneDir = make({ [PACKAGE_NAME]: '^1.35.0', [NEXT_PACKAGE_NAME]: '^2.0.0' })
-  assert.equal(selfInstallState({ profileDir: doneDir }).next, null, '已经装了新名还让人搬')
-  for (const dir of [npmDir, linkDir, doneDir]) fs.rmSync(dir, { recursive: true, force: true })
+  const both = make({ [PACKAGE_NAME]: '^2.0.0', [LEGACY_PACKAGE_NAME]: '^1.35.0' })
+  assert.equal(selfInstallState({ profileDir: both }).legacy, LEGACY_PACKAGE_NAME, '新旧都在却没报残留')
+  const devLegacy = make({ [PACKAGE_NAME]: '^2.0.0', [LEGACY_PACKAGE_NAME]: 'link:D:/src' })
+  assert.equal(selfInstallState({ profileDir: devLegacy }).legacy, null, '本地目录安装的旧包不该被清')
+  const clean = make({ [PACKAGE_NAME]: '^2.0.0' })
+  assert.equal(selfInstallState({ profileDir: clean }).legacy, null, '没有旧包却说有')
+  for (const dir of [both, devLegacy, clean]) fs.rmSync(dir, { recursive: true, force: true })
 })
 
 console.log('== 宠物包 ==')

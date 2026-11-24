@@ -1,17 +1,17 @@
 {
-  "name": "dsh-plugin-startup-animation",
-  "version": "1.35.0",
+  "name": "dsh-ui-stage",
+  "version": "2.0.0",
   "type": "module",
   "description": "Full-screen boot animation for DeepSeek Harness — an appearance theme and desktop pets in the same plugin. Ships built-in videos, wallpapers, voices and pets; accepts your own files. 全屏开机动画：盖住加载页直到应用就绪再淡出；同一套素材还能当外观主题铺在界面后面，另有桌面宠物浮在屏幕上。内置多套视频、壁纸、语音与宠物，也支持上传自己的文件自定义。",
   "license": "MIT",
-  "author": "dsh-plugin-startup-animation contributors",
+  "author": "dsh-ui-stage contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WWFZS/dsh-plugin-startup-animation.git"
+    "url": "git+https://github.com/WWFZS/dsh-ui-stage.git"
   },
-  "homepage": "https://github.com/WWFZS/dsh-plugin-startup-animation#readme",
+  "homepage": "https://github.com/WWFZS/dsh-ui-stage#readme",
   "bugs": {
-    "url": "https://github.com/WWFZS/dsh-plugin-startup-animation/issues"
+    "url": "https://github.com/WWFZS/dsh-ui-stage/issues"
   },
   "gitee": {
     "url": "https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation"

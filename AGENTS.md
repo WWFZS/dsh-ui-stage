@@ -45,7 +45,7 @@
 
 ### 6. npm 与 GitHub Release 的发布由用户发起
 
-插件同时发到 npm（`dsh-plugin-startup-animation`）和 GitHub Release，两条安装路径并存。
+插件同时发到 npm（`dsh-ui-stage`）和 GitHub Release，两条安装路径并存。
 
 - **推送与发布都等用户点头。** 代码只提交到本地，`git push`、建 Release、发 npm 一律由
   用户明确通知后才做。不要按版本数、时间或"攒够了"自行推送或发版 —— 用户验证过、

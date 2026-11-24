@@ -613,7 +613,7 @@ console.log('  ok   GET ?cfg=1 只回配置、不扫素材库')
 
   // 默认更新目标是 Release 的 tgz 直链（不走 git：实测快一个数量级）。
   assert.ok(
-    /releases\/latest\/download\/dsh-plugin-startup-animation\.tgz$/.test(UPDATE_SPEC),
+    /releases\/latest\/download\/dsh-ui-stage\.tgz$/.test(UPDATE_SPEC),
     'UPDATE_SPEC 不是 Release tgz 直链',
   )
   console.log('  ok   UPDATE_SPEC 指向 Release tgz 直链')
@@ -623,16 +623,16 @@ console.log('  ok   GET ?cfg=1 只回配置、不扫素材库')
   assert.equal(put.status, 405, `PUT 应是 405，实际 ${put.status}`)
   console.log('  ok   manage：非法方法 405')
 
-  // ── 改名搬家：本地目录安装（link:）必须**拒绝搬** ──
-  // 这是 1.35.0 的交接动作。搬走等于把 `link:D:/src` 换成 npm 上的正式包，
-  // 维护者下次改源码就不生效了 —— 所以 dev 安装是硬拒绝，且状态里不能给出"该搬"。
+  // ── 改名遗留清扫：本地目录安装的旧包必须**拒绝删** ──
+  // 2.0.0 的保险：跳过 1.35.0 手动装新包的人，机器上会同时留着旧包。
+  // 但 `link:` 的旧包是维护者在调源码 —— 删掉等于把他正在改的代码从 profile 里摘走。
   const selfStatus = (await call(MANAGE_ROUTE)).json()
-  assert.equal(selfStatus.self.next, null, '本地目录安装不该被标记为"该搬家"')
-  const migrateDev = await postJson({ action: 'migrate' })
-  assert.equal(migrateDev.status, 200, migrateDev.body.toString())
-  assert.equal(migrateDev.json().migrated, false, '本地目录安装被搬走了')
-  assert.match(String(migrateDev.json().message), /本地目录/, `搬家没说明为什么不动：${migrateDev.json().message}`)
-  console.log('  ok   manage：改名搬家对 link: 安装是拒绝的，且不给 self.next')
+  assert.equal(selfStatus.self.legacy, null, '本地目录安装的旧包不该被标记为"待清理"')
+  const dropDev = await postJson({ action: 'dropLegacy' })
+  assert.equal(dropDev.status, 200, dropDev.body.toString())
+  assert.equal(dropDev.json().dropped, false, '本地目录安装的旧包被删了')
+  assert.match(String(dropDev.json().message), /本地目录/, `没说明为什么不动：${dropDev.json().message}`)
+  console.log('  ok   manage：旧包清扫对 link: 安装是拒绝的，且不给 self.legacy')
 }
 
 await new Promise((resolve) => server.close(resolve))

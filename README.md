@@ -6,13 +6,13 @@
 
 启动画面、界面主题、桌面宠物 —— 一个插件全满足。
 
-<a href="https://github.com/WWFZS/dsh-plugin-startup-animation/releases"><img src="https://img.shields.io/github/v/release/WWFZS/dsh-plugin-startup-animation?style=flat-square&label=VERSION&color=4d6bfe" alt="Version"></a>
+<a href="https://github.com/WWFZS/dsh-ui-stage/releases"><img src="https://img.shields.io/github/v/release/WWFZS/dsh-ui-stage?style=flat-square&label=VERSION&color=4d6bfe" alt="Version"></a>
 <img src="https://img.shields.io/badge/DSH-0.2.0%2B-4d6bfe?style=flat-square" alt="DSH">
 <img src="https://img.shields.io/badge/运行时-零依赖-2ea44f?style=flat-square" alt="No deps">
 <img src="https://img.shields.io/badge/License-MIT-2ea44f?style=flat-square" alt="License">
 <img src="https://img.shields.io/badge/Author-WWFZS-8957e5?style=flat-square" alt="Author">
 
-[安装](#安装) · [界面预览](#界面预览) · [开机动画](#怎么用) · [界面主题](#界面主题壁纸) · [桌面宠物](#桌面宠物) · [兼容性](#对未来-dsh-版本的兼容性) · [更新记录](https://github.com/WWFZS/dsh-plugin-startup-animation/releases) · [源码构建](#开发)
+[安装](#安装) · [界面预览](#界面预览) · [开机动画](#怎么用) · [界面主题](#界面主题壁纸) · [桌面宠物](#桌面宠物) · [兼容性](#对未来-dsh-版本的兼容性) · [更新记录](https://github.com/WWFZS/dsh-ui-stage/releases) · [源码构建](#开发)
 
 
 </div>
@@ -111,25 +111,32 @@
 
 四种方式，任选一种。装好后都在 **设置 → 开机动画** 里配置，首次安装完刷新一次页面即可。
 
-> **下一版会更名为 `dsh-ui-stage`。** 插件早就不只是开机动画了（界面主题 + 桌面宠物），名字跟不上。
-> 1.35.0 是最后一个用旧名的版本，它负责把老用户搬过去：**装上之后什么都不用做**，
-> 新包一发布，插件会在启动时自动卸载旧名、装上新名、更新启用列表，下次启动 DSH 就是新插件。
-> 设置、上传的素材、宠物位置全部原样保留（配置文件与素材目录跟包名无关）。
-> 本地目录安装（`link:` / `file:`，开发用）不会被搬走。
+> **已改名：`dsh-plugin-startup-animation` → `dsh-ui-stage`。** 插件早就不只是开机动画了
+> （界面主题 + 桌面宠物），旧名字装不下这三件事。
+>
+> **老用户怎么升级**：设置页点一次「更新」装到 **1.35.0**，重启后它会自动把自己换成新包
+> （卸载旧名、装上新名、更新启用列表），再重启一次就是 2.0.0。设置、上传的素材、宠物位置
+> 全部原样保留 —— 配置文件和素材目录跟包名无关。
+> 走「方式二 / 方式三」直接装新包的人也不用担心：2.0.0 启动时会检测并清掉残留的旧包。
+>
+> 本地目录安装（`link:` / `file:`，开发用）不会被自动搬走或删除。
 
-代码在国内两个地方都放了一份，内容一致：[GitHub](https://github.com/WWFZS/dsh-plugin-startup-animation) 与
+代码在国内两个地方都放了一份，内容一致：[GitHub](https://github.com/WWFZS/dsh-ui-stage) 与
 [Gitee](https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation)。**版本号、Release 与 npm 包以 GitHub 为准。**
 方式二到方式四都有 Gitee 通道，GitHub 慢的时候替换链接即可，见每节末尾。
+
+> Gitee 镜像**还停在改名前的 1.35.0**（仓库名与资产名都是旧的），只作"装得上、能迁移"的兜底通道；
+> 2.0.0 起只在 GitHub 发布。
 
 ### 方式一：搜包名（最简单）
 
 插件已发布到 npm，DSH 0.2.1+ 的插件管理器能直接装。
 
 1. 打开 **设置 → 插件**，点 **添加插件**
-2. **插件名**填 `dsh-plugin-startup-animation`
+2. **插件名**填 `dsh-ui-stage`
 3. 点 **安装**，完成后刷新页面
 
-包名也可以在 [npm 页面](https://www.npmjs.com/package/dsh-plugin-startup-animation) 上核对版本。
+包名也可以在 [npm 页面](https://www.npmjs.com/package/dsh-ui-stage) 上核对版本。
 
 ### 方式二：直链（不走 npm）
 
@@ -141,17 +148,17 @@ GitHub 慢、或想直接从 Release 装时用这条。这条路**不需要 npm�
 4. 点 **安装**，完成后刷新页面
 
 ```
-https://github.com/WWFZS/dsh-plugin-startup-animation/releases/latest/download/dsh-plugin-startup-animation.tgz
+https://github.com/WWFZS/dsh-ui-stage/releases/latest/download/dsh-ui-stage.tgz
 ```
 
 链接永远指向最新版，收藏一次就够。GitHub 慢的话，用浏览器把同一链接另存为文件，再把
-**文件的绝对路径**填进「插件名」（例如 `C:\Users\你\Downloads\dsh-plugin-startup-animation.tgz`），
+**文件的绝对路径**填进「插件名」（例如 `C:\Users\你\Downloads\dsh-ui-stage.tgz`），
 效果一样。
 
 国内走 Gitee 的话用这条（`<版本>` 换成 [Releases 页](https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation/releases) 上的最新版本号）：
 
 ```
-https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation/releases/download/<版本>/dsh-plugin-startup-animation.tgz
+https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation/releases/download/<版本>/dsh-ui-stage.tgz
 ```
 
 Gitee 没有 `latest` 这种永久链接，地址里必须带版本号 —— 想一次填对就用上面 GitHub 那条，
@@ -161,13 +168,13 @@ Gitee 没有 `latest` 这种永久链接，地址里必须带版本号 —— �
 
 ```sh
 # 从 npm（profile 需要能访问 npm registry）
-dsh plugin --profile <你的 profile> add dsh-plugin-startup-animation
+dsh plugin --profile <你的 profile> add dsh-ui-stage
 
 # 或从 GitHub 直链
-dsh plugin --profile <你的 profile> add https://github.com/WWFZS/dsh-plugin-startup-animation/releases/latest/download/dsh-plugin-startup-animation.tgz
+dsh plugin --profile <你的 profile> add https://github.com/WWFZS/dsh-ui-stage/releases/latest/download/dsh-ui-stage.tgz
 
 # 或从 Gitee 直链（<版本> 换成 Releases 页上的最新版本号）
-dsh plugin --profile <你的 profile> add https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation/releases/download/<版本>/dsh-plugin-startup-animation.tgz
+dsh plugin --profile <你的 profile> add https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation/releases/download/<版本>/dsh-ui-stage.tgz
 ```
 
 本地 `.tgz` 文件或本地目录路径同样可以，把最后一个参数换掉即可。然后重启 `dsh`。
@@ -175,7 +182,7 @@ dsh plugin --profile <你的 profile> add https://gitee.com/weiwenfengzs/dsh-plu
 ### 方式四：从源码
 
 ```sh
-git clone https://github.com/WWFZS/dsh-plugin-startup-animation.git
+git clone https://github.com/WWFZS/dsh-ui-stage.git
 # 或者从 Gitee 克隆（内容一致）
 git clone https://gitee.com/weiwenfengzs/dsh-plugin-startup-animation.git
 
@@ -274,7 +281,7 @@ dsh plugin --profile <你的 profile> add /该仓库的绝对路径
 
 ```sh
 # 覆盖安装，设置与已上传素材都会保留
-dsh plugin --profile <你的 profile> add https://github.com/WWFZS/dsh-plugin-startup-animation/releases/latest/download/dsh-plugin-startup-animation.tgz
+dsh plugin --profile <你的 profile> add https://github.com/WWFZS/dsh-ui-stage/releases/latest/download/dsh-ui-stage.tgz
 ```
 
 你的配置（`$DSH_HOME/startup-animation.json`）和上传素材
@@ -444,7 +451,7 @@ Harness"来处理：
 ## 卸载
 
 ```sh
-dsh plugin --profile <你的 profile> remove dsh-plugin-startup-animation
+dsh plugin --profile <你的 profile> remove dsh-ui-stage
 ```
 
 `$DSH_HOME/startup-animation-media/` 里上传的素材是你自己的数据，插件不会替你删。

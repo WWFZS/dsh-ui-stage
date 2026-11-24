@@ -1,13 +1,13 @@
 # 给 DeepSeek Harness 装上开机动画、界面主题和桌面宠物：一个插件的三次"做减法"
 
-> 项目：`dsh-plugin-startup-animation` · MIT · 零运行时依赖
-> 仓库：https://github.com/WWFZS/dsh-plugin-startup-animation
+> 项目：`dsh-ui-stage` · MIT · 零运行时依赖
+> 仓库：https://github.com/WWFZS/dsh-ui-stage
 
 ## 先说结论
 
 DeepSeek Harness（下称 DSH）的插件生态里，"换外观"这件事被拆得很散：开机动画一个、壁纸一个、宠物一个。装三个插件、占三份资源、互相抢 `body` 上的主题令牌。
 
-`dsh-plugin-startup-animation` 把它们合成一个：**启动画面 + 界面主题 + 桌面宠物**，一套素材库共用，运行时不依赖任何 npm 包，装好即用。
+`dsh-ui-stage` 把它们合成一个：**启动画面 + 界面主题 + 桌面宠物**，一套素材库共用，运行时不依赖任何 npm 包，装好即用。
 
 但真正值得写的不是"三合一"这个决定，而是做完之后的三轮返工——每一轮都是把**已经能用的功能删掉一部分**，因为用户的实际反馈是"太花哨了"「不够丝滑」「看不清」。
 
@@ -228,7 +228,7 @@ FAIL 拖了 20 格却更新了 20 次 state（真 React 会整页重渲染 20 �
 ## 安装
 
 ```sh
-dsh plugin --profile <你的 profile> add dsh-plugin-startup-animation
+dsh plugin --profile <你的 profile> add dsh-ui-stage
 ```
 
 或者在插件市场里搜包名。
@@ -239,4 +239,4 @@ dsh plugin --profile <你的 profile> add dsh-plugin-startup-animation
 
 MIT 许可。开箱自带 7 段视频 / 9 张壁纸 / 9 段语音 + 两只宠物（合计 127 段动作），也支持上传自己的 MP4 / WebM / GIF / PNG / JPG / MP3。
 
-仓库：https://github.com/WWFZS/dsh-plugin-startup-animation
+仓库：https://github.com/WWFZS/dsh-ui-stage

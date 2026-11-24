@@ -24,7 +24,7 @@
  *   - 样式只用 --dsw-alias-* 主题 token（控件层；启动画面本身的配色是艺术品层）。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-plugin-startup-animation',
+  id: 'dsh-ui-stage',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -5906,36 +5906,36 @@ window.__ModuleLoader__.load({
           void wallLayer.load()
 
           /**
-           * 改名搬家（1.35.0 专属的交接动作）。
+           * 清扫改名遗留（2.0.0 的保险）。
            *
-           * 这一版是"旧名的最后一版"，唯一职责是把自己搬到 `dsh-ui-stage`。用户不点任何东西：
-           * 客户端一加载就问一次宿主，宿主在状态里给出 `self.next`（该搬）才动手。
+           * 插件在 2.0.0 改名为 `dsh-ui-stage`。跨过 1.35.0、直接手动装新包的人，机器上会
+           * **同时留着旧包**；而宿主的插件管理器安装时会自动把它加进启用列表 ——
+           * 两个插件同时激活就是两层壁纸、两只宠物，用户还看不出是配置问题。
            *
-           * 为什么放在这里而不是设置页的 effect 里：
-           *   - 搬家与"用户有没有打开设置页"无关，插件加载就该做；
-           *   - 宿主是唯一判据（本地目录安装 / 已搬过 / 新包没发布，一律不给 `self.next`），
-           *     客户端不该自己判断包名，那等于把策略写两份。
+           * 客户端一加载就问一次宿主，宿主说 `self.legacy` 还在才动手（判定权在宿主：
+           * 本地目录安装不算残留，那是维护者的开发链接）。
            *
-           * 只试一次：失败也不重试 —— 宿主下次启动还会给出 `self.next`，天然带退避。
+           * 放在插件加载而不是设置页的 effect 里：清残留与"有没有打开设置页"无关。
+           * 只试一次，失败不重试 —— 下次启动宿主还会给出 `self.legacy`，天然带退避。
            */
-          const migrateOnce = async () => {
+          const sweepLegacy = async () => {
             try {
               const res = await fetch(MANAGE, { cache: 'no-store' })
               const payload = await res.json()
               const self = payload && typeof payload.self === 'object' && payload.self !== null ? payload.self : null
-              if (self === null || typeof self.next !== 'string' || self.next === '') return
+              if (self === null || typeof self.legacy !== 'string' || self.legacy === '') return
               const done = await fetch(MANAGE, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'migrate' }),
+                body: JSON.stringify({ action: 'dropLegacy' }),
               }).then((response) => response.json())
-              if (done && done.migrated) wallLog('改名搬家完成 →', self.next, '重启 DSH 后生效')
-              else wallLog('改名搬家未执行：', done && done.message)
+              if (done && done.dropped) wallLog('旧包已清除：', self.legacy, '（重启 DSH 后完全生效）')
+              else wallLog('旧包清理未执行：', done && done.message)
             } catch (error) {
-              wallLog('改名搬家失败', error)
+              wallLog('旧包清理失败', error)
             }
           }
-          void migrateOnce()
+          void sweepLegacy()
 
           return () => {
             window.removeEventListener('dsa:wall-sync', onWallSync)
