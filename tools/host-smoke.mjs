@@ -410,6 +410,26 @@ const wallColorAuto = await postJson({ wallpaperTextColor: 'auto' })
 assert.equal(wallColorAuto.status, 200, wallColorAuto.body.toString())
 assert.equal(wallColorAuto.json().wallpaper.textColor, 'auto', '没能回 auto')
 
+// 换预设也不许碰三根滑杆 —— 这是用户报的"时不时还原为默认值"的落盘那一半。
+// 客户端现在点预设只发 `{wallpaperPreset, wallpaperGlass:'auto'}`，不再发
+// wallpaperScrim/Blur/Saturate；这里直接验磁盘：先调好三根，再换预设，
+// 三根必须原样留着。宿主侧把 `'auto'` 当成**删除这个键**，所以清一次就是真丢。
+await postJson({ wallpaperScrim: 0.4, wallpaperBlur: 6, wallpaperSaturate: 1.4 })
+const wallKeepTune = await postJson({ wallpaperPreset: 'vivid', wallpaperGlass: 'auto' })
+assert.equal(wallKeepTune.status, 200, wallKeepTune.body.toString())
+assert.equal(wallKeepTune.json().wallpaper.preset, 'vivid', '预设没换成 vivid')
+assert.equal(wallKeepTune.json().wallpaper.scrim, 0.4, '换预设把遮罩厚度还原成默认值了')
+assert.equal(wallKeepTune.json().wallpaper.blur, 6, '换预设把壁纸模糊还原成默认值了')
+assert.equal(wallKeepTune.json().wallpaper.saturate, 1.4, '换预设把色彩浓度还原成默认值了')
+// 落盘文件里也必须在：回包对但盘上没了，刷新一次就又变回默认值。
+{
+  const saved = JSON.parse(fs.readFileSync(path.join(process.env.DSH_HOME, 'startup-animation.json'), 'utf8'))
+  const boot = saved.boot ?? {}
+  assert.equal(boot.wallpaperScrim, 0.4, `磁盘上的遮罩厚度是 ${boot.wallpaperScrim}，不是 0.4`)
+  assert.equal(boot.wallpaperBlur, 6, `磁盘上的壁纸模糊是 ${boot.wallpaperBlur}，不是 6`)
+  assert.equal(boot.wallpaperSaturate, 1.4, `磁盘上的色彩浓度是 ${boot.wallpaperSaturate}，不是 1.4`)
+}
+
 // 音频不能当壁纸：静默拒收（不落盘、不炸），壁纸保持关闭。
 const wallAudio = await postJson({ wallpaperFile: audioEntry.path })
 assert.equal(wallAudio.status, 200, wallAudio.body.toString())

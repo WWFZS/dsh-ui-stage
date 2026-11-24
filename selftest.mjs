@@ -1043,7 +1043,7 @@ await check('预设与微调：认得的 id 保留，越界的值被夹取', () 
   assert.equal(wallpaper.preset, 'frosted')
   assert.equal(wallpaper.scrim, 0.8, '幕浓度没有夹到上限')
   assert.equal(wallpaper.blur, 0, '模糊没有夹到下限')
-  assert.equal(wallpaper.saturate, 1.6, '饱和没有夹到上限')
+  assert.equal(wallpaper.saturate, 2, '饱和没有夹到上限')
   assert.equal(wallpaper.glassAlpha, 0, '玻璃厚度已经固定为 0（滑杆收掉了）')
 })
 

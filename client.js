@@ -174,7 +174,9 @@ window.__ModuleLoader__.load({
     const SCREEN_LIMITS = Object.freeze({
       scrim: [0, 0.8],
       blur: [0, 10],
-      saturate: [0.3, 1.6],
+      // 色彩浓度：1×–2×（界面上按 100%–200% 显示，100% = 原图 = 出厂值），连续可调。
+      // 低于 1× 的"褪色"没人用，却会让滑杆一半的行程落在无色感的一侧，所以下限就是 1。
+      saturate: [1, 2],
       opacity: [0.15, 0.92],
       // 玻璃面透明度：上限 0.92 —— 留一点缝让壁纸透出来，同时地板层仍在托底。
       glass: [0, 0.92],
@@ -636,6 +638,21 @@ window.__ModuleLoader__.load({
       // 面板实际用的颜色：壁纸主色按"墙面透明度"往预设釉色里掺一档，让五套预设仍有区分，
       // 但主调是壁纸自己的颜色。
       const sheetRgb = byte3(mixRgb(g1Rgb(g1.final), wallBase, 0.62))
+      // 输入框 / @ 菜单的透明档。
+      //
+      // 它**不是列底**：卡片式布局下 `shellTarget` 是 0（列底 `transparent`，面板由卡片负责），
+      // 所以不能直接复用 `wallAlpha`。这里单独解一个"字还看得清的最小遮挡量"：
+      //   - 下限就是 `WALL_ALPHA_MIN`（0.35）—— 项目既有的规矩，不为输入框破例：
+      //     再透下去就不是玻璃而是没有，壁纸直接扎在字后面，任何前景色都救不回来。
+      //   - 上限 0.85：永远留一点壁纸色，不做成实色板（那就等于没改这块）。
+      // 于是暗壁纸恒在 0.35（65% 壁纸透出来），花壁纸/白釉在暗底上自动升到 0.8 上下 ——
+      // "看得见壁纸"和"字看得清"在同一套数学里自己找平衡，不需要人为调参。
+      //
+      // 解的对象必须是**玻璃色**（g1.final），不是壁纸主色 wallBase：输入框的底色是前者，
+      // 拿后者的解去套，α 和实际颜色就对不上（白釉会算出深釉的档）。
+      const inputAlpha = Math.min(0.85, solveWallAlpha(g1Rgb(g1.final), glassInk, wallWorst))
+      // 框里那几个小按钮（+、模式选择）：比框体实一档才看得出是"按得动的东西"。
+      const inputLiftAlpha = Math.min(0.92, inputAlpha + 0.08)
       // 三档字色。自定义颜色时三档都以它为准，只改透明度来表达层级 ——
       // 色相是用户挑的，动它就等于没听用户的。
       const ink = customInkRgb === null
@@ -691,6 +708,12 @@ window.__ModuleLoader__.load({
         'dsa-wall-glass-2': g1.final,
         'dsa-wall-glass-3': g1.final,
         'dsa-wall-glass-solid': toHex(mixRgb(g1Rgb(g1.final), parseHex(dark ? FLOOR_BASE.dark : FLOOR_BASE.light) ?? g1Rgb(g1.final), floor * 0.5)),
+        // 输入框 / @ 菜单：带 α 的同一族玻璃色（α 见上面的 inputAlpha）。
+        // 以前这两个令牌拿到的是 `glass-2` / `glass-3`，那三个是同**一个不透明色** ——
+        // 于是"输入框透明"根本无从谈起，壁纸在它底下完全看不见。
+        'dsa-wall-input': rgba(g1Rgb(g1.final), inputAlpha),
+        'dsa-wall-input-lift': rgba(g1Rgb(g1.final), inputLiftAlpha),
+        'dsa-wall-input-alpha': String(Math.round(inputAlpha * 100) / 100),
         'dsa-wall-frost': toHex(frostRgb),
         'dsa-wall-frost-2': frost2Hex,
         'dsa-wall-frost-3': frost3Hex,
@@ -902,7 +925,9 @@ window.__ModuleLoader__.load({
       return {
         preset: p.id,
         scrim: Math.round(p.scrim * 1000) / 1000,
-        blur: Math.round(p.blur),
+        // 模糊也留三位小数：滑杆一格是 0.1px，取整回整数就等于把用户拖的细步进吃掉，
+        // 界面上读数从 0% 直接跳到 10%。三位足够表达一格，也不会在反序列化后漂。
+        blur: Math.round(p.blur * 1000) / 1000,
         saturate: Math.round(p.saturate * 1000) / 1000,
         opacity: Math.round(clampRange(Number.isFinite(p.opacity) ? p.opacity : 0.72, SCREEN_LIMITS.opacity) * 1000) / 1000,
         glassAlpha: Math.round(clampRange(Number.isFinite(p.glassAlpha) ? p.glassAlpha : 0.4, SCREEN_LIMITS.glass) * 1000) / 1000,
@@ -1371,18 +1396,31 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
       const [message, setMessage] = React.useState({ text: '', kind: '' })
+      /**
+       * 请求序号：**只采纳最新那一次的回包**。
+       *
+       * 为什么必须有（用户报的"三根滑杆时不时变回默认值"的一半原因就在这里）：
+       * 每写一次配置都是一次独立的 POST，各自带着一份完整状态回来。连着拖两根滑杆时
+       * 两个请求同时在飞，而回包顺序**不保证**与发出顺序一致 —— 先发的请求后回来时，
+       * 会把已经调好的值按它自己那份旧状态盖回去。用户看到的就是"刚调好的数自己弹回
+       * 默认值"，而且刷新一下又好：因为磁盘上其实是对的，错的只是这份界面状态。
+       *
+       * 用 ref 而不是 state：序号只是记账，不需要触发渲染。
+       */
+      const seqRef = React.useRef(0)
 
       React.useEffect(() => {
         let alive = true
+        const seq = (seqRef.current += 1)
         fetch(MANAGE, { cache: 'no-store' })
           .then((res) => res.json())
           .then((payload) => {
-            if (!alive) return
+            if (!alive || seq !== seqRef.current) return
             if (payload && payload.ok) setState(payload)
             else setMessage({ text: (payload && payload.error) || t('loadFail'), kind: 'error' })
           })
           .catch(() => {
-            if (alive) setMessage({ text: t('loadFail'), kind: 'error' })
+            if (alive && seq === seqRef.current) setMessage({ text: t('loadFail'), kind: 'error' })
           })
         return () => {
           alive = false
@@ -1398,9 +1436,16 @@ window.__ModuleLoader__.load({
       const send = (init, successText) => {
         setBusy(true)
         setMessage({ text: '', kind: '' })
+        // 认领一个序号：回包只在"自己仍是最新那一个"时才允许改写状态。
+        // 连着拖两根滑杆/连点两个开关时，多个 POST 同时在飞，先发后到的那份旧状态
+        // 会把刚调好的值盖回去 —— 用户看到的就是滑杆自己弹回默认值。
+        const seq = (seqRef.current += 1)
         return fetch(MANAGE, init)
           .then((res) => res.json().catch(() => null))
           .then((payload) => {
+            // stale：这次回包已经被更新的请求超越了 —— 连提示与 busy 都不该动它，
+            // 否则会出现"先结束的那个请求把 busy 放开、界面又能点"，而真正的最新状态还没到。
+            if (seq !== seqRef.current) return payload
             setBusy(false)
             if (payload && payload.ok) {
               setState(payload)
@@ -1421,6 +1466,7 @@ window.__ModuleLoader__.load({
             return payload
           })
           .catch(() => {
+            if (seq !== seqRef.current) return null
             setBusy(false)
             setMessage({ text: t('netFail'), kind: 'error' })
             return null
@@ -2902,7 +2948,8 @@ window.__ModuleLoader__.load({
         base = document.createElement('div')
         base.className = 'dsa-wall'
         base.setAttribute('aria-hidden', 'true')
-        // 层叠与尺寸都在 ensureLive 的样式表里，这里一句内联都不写。
+        // 层叠与尺寸在 ensureLive 的样式表里；这里只留一句都不写（filter/transform 由
+        // applyVisual 在拖动时逐格内联写入，见那里的注释）。
         mediaEl = document.createElement('img')
         mediaEl.className = 'dsa-wall-cover'
         mediaEl.alt = ''
@@ -2918,11 +2965,14 @@ window.__ModuleLoader__.load({
       /**
        * 一条样式表管两件事：壁纸层自己的层叠与尺寸 + 覆盖应用的让位变量。
        *
-       * 为什么不用 body 内联样式（ThemePresenter 那种做法）：
-       *   - 内联改一个变量，浏览器要把整棵树的依赖了它的样式重算一遍；拖滑杆时每帧都来一次；
+       * 为什么让位变量不用 body 内联样式（ThemePresenter 那种做法）：
+       *   - 那一族变量有二十多个，逐个 setProperty 是二十几次样式失效，每帧来一遍；
        *   - 用一条样式表就**换掉整段文本**，只有依赖这些变量的规则重新匹配。
        * 还有一点更重要：作用域是 `body`，比应用写在自己元素上的变量低一档 ——
        * 只顶掉"应用没写死的地方"，不去和组件自己设的局部值硬碰。
+       *
+       * 例外是壁纸层自己的 `filter` / `transform`（见 applyVisual）：那只有两个属性、
+       * 只落在 `.dsa-wall` 这一个自绘元素上，内联比重建整张表便宜得多。
        */
       const ensureLive = () => {
         if (sheetEl === null) {
@@ -2953,12 +3003,35 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 把"壁纸层骨架 + 颜色变量"整段写进样式表。
+       * 把「壁纸本体多虚」贴到壁纸层元素上 —— 走内联样式，不进样式表。
        *
-       * @param {Record<string, string>} tokens deriveTokens 的输出。
+       * 为什么单拎出来：模糊与色彩浓度这两根滑杆只影响这一条 `filter`。如果把它塞进
+       * `paintCss` 的整段 CSS 文本里，拖一格就要重建约 4KB 字符串 + `style.textContent`
+       * 全量替换（浏览器重解析整张表），60–240 格/秒就是每秒几十毫秒的主线程占用，
+       * 表现就是"一格一格跳、跟不上鼠标"。内联赋值只改一个计算属性，几乎免费。
+       *
+       * 另外补一个 scale：模糊会把边缘吸进一圈透明，放大 6% 补掉。没模糊时必须回到 1，
+       * 否则壁纸被放大后会糊掉边角。
+       *
        * @param {{ blur: number, saturate: number }} resolved 已解析的预设参数。
        */
-      const paintCss = (tokens, resolved) => {
+      const applyVisual = (resolved) => {
+        if (base === null) return
+        const blur = Number.isFinite(resolved.blur) ? resolved.blur : 0
+        const saturate = Number.isFinite(resolved.saturate) ? resolved.saturate : 1
+        base.style.filter = `blur(${blur}px) saturate(${saturate})`
+        base.style.transform = `scale(${blur > 0 ? 1.06 : 1})`
+      }
+
+      /**
+       * 把"壁纸层骨架 + 颜色变量"整段写进样式表。
+       *
+       * 注意这里写的是**常量基线**（blur 0 / saturate 1）：真值由 applyVisual() 内联盖上。
+       * 于是拖模糊/浓度时这份 CSS 文本一个字都不变，下面的 `css === lastCss` 直接短路。
+       *
+       * @param {Record<string, string>} tokens deriveTokens 的输出。
+       */
+      const paintCss = (tokens) => {
         const vars = layoutVars(tokens)
         const css = [
           // 层叠：负 z-index 是唯一"垫在所有列之下、又不脱离 body 定位"的位置。
@@ -2970,7 +3043,13 @@ window.__ModuleLoader__.load({
           // 磨砂只跟**壁纸模糊**这根滑杆走：它是用户唯一能控制的"壁纸本体多虚"。
           // 这里绝不能用 surfaceBlur —— 那是预设的"面板磨砂"档，之前用它做主模糊，
           // 结果可读优先预设一上来就把壁纸糊掉 24px，用户看到的是"背景不显示"。
-          `filter:blur(${resolved.blur}px) saturate(${resolved.saturate});transform:scale(${resolved.blur > 0 ? 1.06 : 1});}`,
+          //
+          // 这里写的是**常量基线**（blur 0 / saturate 1 / scale 1），真值由 applyVisual()
+          // 用内联样式盖上去。为什么：拖模糊或色彩浓度时，如果 CSS 文本里带着数值，
+          // 每一格都要重建整段样式表 + `style.textContent` 全量替换（浏览器要重解析一整张
+          // 表），那是几十毫秒级的活；改成内联后这两根滑杆拖动时 CSS 文本一个字都不变，
+          // `lastCss` 直接短路，每格只剩一次廉价的属性赋值。
+          'filter:blur(0px) saturate(1);transform:scale(1);}',
           '.dsa-wall-cover{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;}',
           '.dsa-wall-scrim{position:absolute;inset:0;}',
           // 画布本身也放空。body 的底色就是 var(--dsw-alias-bg-base)，令牌顶掉之后它自己就透了，
@@ -3090,7 +3169,9 @@ window.__ModuleLoader__.load({
         '--dsw-alias-bg-multi-select': tokens['dsa-wall-frost-2'],
         // 抬高的按钮（侧栏「新建会话」、重命名输入框）：比最高那层再亮半档。
         '--dsw-alias-button-elevated-fill': tokens['dsa-wall-frost-3'],
-        '--dsw-alias-button-floating-fill': tokens['dsa-wall-frost-3'],
+        // 输入框里的按钮（`+`、模式选择）：和输入框同一族玻璃，但实一档 ——
+        // 不然"看得见壁纸"和"看得见按钮"会打架。
+        '--dsw-alias-button-floating-fill': tokens['dsa-wall-input-lift'],
         // 字色：由玻璃面的实际亮度决定（deriveTokens 里算过），不是拍脑袋。
         '--dsw-alias-label-primary': tokens['dsa-wall-ink'],
         '--dsw-alias-label-secondary': tokens['dsa-wall-ink-dim'],
@@ -3112,8 +3193,14 @@ window.__ModuleLoader__.load({
         '--dsw-specific-bubble': tokens['dsa-wall-frost-2'],
         '--dsw-specific-bubble-highlight': tokens['dsa-wall-glass-2'],
         // 菜单 / 输入区 / 悬浮层：自成一个面，同样必须跟着走。
-        '--dsw-specific-menu': tokens['dsa-wall-glass-3'],
-        '--dsw-specific-input-major': tokens['dsa-wall-glass-2'],
+        //
+        // 这两个是**带 α 的玻璃**（`dsa-wall-input`），不是不透明的玻璃色：
+        // 输入框是这张脸最显眼的一块面，做成实色就把壁纸挡死了。
+        // α 由引擎按"字还看得清"解出来（0.18–0.85），壁纸越亮它越实。
+        // 实测：输入框底色来自令牌 `input-major`，挂在输入卡片那一层（radius 28px），
+        // 它背后没有别的实卡，所以这里带 α 就能真的透出壁纸。
+        '--dsw-specific-menu': tokens['dsa-wall-input'],
+        '--dsw-specific-input-major': tokens['dsa-wall-input'],
         '--dsw-alias-interactive-bg-hover': tokens['dsa-wall-hover'],
         '--dsw-alias-interactive-bg-hover-solid': tokens['dsa-wall-hover'],
         // 强调色：按钮、链接、选中态。预设自带，换预设立刻换调子。
@@ -3126,8 +3213,11 @@ window.__ModuleLoader__.load({
        *
        * 内置素材带 `hint`（出厂代表色），所以第一帧之前就能定色；上传的素材没有 hint，
        * 退到"按深色保底"（绝大多数壁纸是暗的，先按暗的排，取样到了再纠正）。
+       *
+       * @param {object | null} analysis 画面摘要。
+       * @param {{ notify?: boolean }} [opts] `notify: false` = 只贴页不广播（拖滑杆的预览帧用）。
        */
-      const decideAndApply = (analysis) => {
+      const decideAndApply = (analysis, opts = {}) => {
         if (cfg === null) return
         const preset = {
           preset: cfg.preset,
@@ -3147,14 +3237,18 @@ window.__ModuleLoader__.load({
         // —— 那正是内核 ThemePresenter 写的两个稳定属性。
         const tokens = deriveTokens(decision, resolved, { dark: themeIsDark() })
         lastDecision = { ...decision, analysis, tokens }
-        paintCss(tokens, resolved)
+        paintCss(tokens)
+        // 模糊/浓度只动壁纸层自己的两个属性，不进样式表（见 applyVisual）。
+        applyVisual(resolved)
         // 只动幕的浓度/颜色 —— 这两个属性挂在自绘的幕元素上，不影响应用任何样式。
         if (scrimEl !== null) {
           // 幕的颜色跟墨色走：浅色字压暗幕，深色字压亮幕。
           scrimEl.style.background = decision.ink === 'light' ? '#000' : '#fff'
           scrimEl.style.opacity = String(decision.scrim)
         }
-        if (typeof onDecision === 'function') onDecision(lastDecision)
+        // 预览帧（拖滑杆）不广播：见 preview() 的注释。其余路径（挂素材 / sync / 换主题）
+        // 每次都要报，否则设置页拿不到画面摘要，预设卡与对比度会整排变灰。
+        if (opts.notify !== false && typeof onDecision === 'function') onDecision(lastDecision)
       }
 
       /**
@@ -3469,8 +3563,11 @@ window.__ModuleLoader__.load({
         /**
          * 拖滑杆时的"预览一步"：只改这一份配置里的微调，不重新挂素材、不落盘。
          *
-         * 拖拽过程由设置页本地驱动 + rAF 合并，这里每帧最多跑一次 resolve+decide+paint，
-         * 全是纯计算加一次 `textContent` 赋值 —— 不会触发应用任何组件重渲染。
+         * 拖拽过程由设置页本地驱动 + rAF 合并，这里每帧最多跑一次 resolve+decide+paint。
+         * `notify: false` 这一步更重要：每帧都 `onDecision` 会把 `dsa:wall-decision`
+         * 广播到设置页，那边 `setLiveDecision` 一 setState 就是整块主题面板重渲染
+         * （14 次 presetPreview + 5 张预设卡 + 8 个色块）。拖动期间画面摘要本来就不变，
+         * 少这次广播不丢任何信息 —— 松手落盘后 sync 会照常再报一次。
          *
          * @param {{ scrim?: number | 'auto', blur?: number | 'auto', saturate?: number | 'auto', preset?: string }} tweak 只含变了的键。
          */
@@ -3501,7 +3598,7 @@ window.__ModuleLoader__.load({
           const hint = Array.isArray(cfg.hint) ? cfg.hint : []
           // 有画面摘要就用真画面，否则退回出厂代表色（两者都比"什么都不算"准）。
           const analysis = lastDecision !== null && lastDecision.analysis ? lastDecision.analysis : hint.length > 0 ? analyzeColors(hint) : null
-          decideAndApply(analysis)
+          decideAndApply(analysis, { notify: false })
         },
         destroy() {
           alive = false
@@ -4155,11 +4252,25 @@ window.__ModuleLoader__.load({
          *   ② 内置素材的出厂代表色（`wallpaper.hint`）—— 背景层要是还没起来、
          *      或者根本没收到广播，就用它兜底。**不能返回 null**：那样七格预设一个
          *      数字都没有，用户看到的就是"这些卡片是死的"。
+         *
+         * **缓存 analysis**：它只取决于"哪张壁纸 + 有没有收到广播"，而一次渲染要
+         * 调 14 次（5 张预设卡 + 8 个色块 + 1 次读数）。不缓存的话每次都重跑
+         * `analyzeColors(hint)`，实测占掉一次渲染 47% 的时间 —— 而那些调用里
+         * 输入完全一样，纯属白算。缓存键是 hint 数组的引用 + 广播那份摘要的引用，
+         * 两者任一换了才重算。
          */
-        const presetPreview = (presetId, textColor = 'auto') => {
+        let analysisCache = { sampled: null, hint: null, value: null }
+        const resolveAnalysis = () => {
           const sampled = liveDecision && liveDecision.analysis ? liveDecision.analysis : null
-          const hint = wallpaper !== null && Array.isArray(wallpaper.hint) ? wallpaper.hint : []
-          const analysis = sampled !== null ? sampled : hint.length > 0 ? analyzeColors(hint) : null
+          const hint = wallpaper !== null && Array.isArray(wallpaper.hint) ? wallpaper.hint : null
+          if (analysisCache.sampled === sampled && analysisCache.hint === hint) return analysisCache.value
+          const value = sampled !== null ? sampled : hint !== null && hint.length > 0 ? analyzeColors(hint) : null
+          analysisCache = { sampled, hint, value }
+          return value
+        }
+
+        const presetPreview = (presetId, textColor = 'auto') => {
+          const analysis = resolveAnalysis()
           if (analysis === null) return null
           const resolved = resolvePreset({ preset: presetId, scrim: 'auto', blur: 'auto', saturate: 'auto', textColor })
           try {
@@ -4199,28 +4310,30 @@ window.__ModuleLoader__.load({
           const switchingPreset = typeof patch.wallpaperPreset === 'string' && patch.wallpaperPreset !== next.preset
           if (switchingPreset) {
             next.preset = patch.wallpaperPreset
-            // 换预设 = 换整套观感：把旧预设的微调（磨砂半径、遮挡）一并清掉，
-            // 否则残留值会盖住新预设 —— 用户看到的还是上一套的磨砂。
+            // 换预设 = 换**颜色那套配方**（釉色、面板磨砂、玻璃配方），这三项归预设所有，
+            // 必须跟着换 —— 否则残留的旧配方会盖住新预设，用户看到的就是"点了没反应"。
             next.surfaceBlur = 'auto'
-            next.scrim = 'auto'
             next.glassAlpha = 'auto'
-            next.blur = 'auto'
-            next.saturate = 'auto'
-            // 画面摘要要重算：磨砂半径现在是预设自带的观感，而 hint（出厂代表色）
-            // 算出来的摘要跟真画面算出来的可能不一样 —— 不换的话换预设只改了卡片。
+            // **三根滑杆不归预设管**：五套预设的 scrim / blur / saturate 都是同一组值
+            //（0 / 0 / 1），换预设本来就不该改变它们。以前这里顺手清成 'auto'，
+            // 结果是"调好的遮罩/模糊/色彩浓度，点一下预设就全变回默认值"——
+            // 用户报的正是这个。用户拖出来的值原样留着，换预设只换颜色。
+            // 画面摘要要重算：hint（出厂代表色）算出来的摘要跟真画面算出来的可能不一样，
+            // 不换的话换预设只改了卡片。
             const hint = Array.isArray(next.hint) ? next.hint : []
             next.analysis = hint.length > 0 ? analyzeColors(hint) : null
           }
           // 'auto' 与"没传"都表示"回到预设自带的值"：交给 sanitizeTweak 就不必在
           // 这里重写一遍优先级（它内部就是 resolvePreset，非有限数即跳过）。
-          const sliderKeys = [
+          //
+          // 注意这一段**只在补丁真的带了滑杆键时才动滑杆**。点预设的补丁只有
+          // `wallpaperPreset` / `wallpaperGlass`，所以三根滑杆原样不动 —— 这正是
+          // "换预设不该把用户调好的外观弄回默认值"的落点。
+          for (const [from, to] of [
             ['wallpaperScrim', 'scrim'],
             ['wallpaperBlur', 'blur'],
             ['wallpaperSaturate', 'saturate'],
-          ]
-          for (const [from, to] of sliderKeys) {
-            // `switchingPreset` 刚把那几个键清成 'auto'：这里要**跳过**，不能改回去。
-            if (switchingPreset && to !== 'preset') continue
+          ]) {
             if (patch[from] === 'auto') next[to] = 'auto'
             else if (Number.isFinite(patch[from])) next[to] = patch[from]
           }
@@ -4810,13 +4923,39 @@ window.__ModuleLoader__.load({
             if (cat) for (const file of cat.files) if (file.themeable !== false) wallFiles.push(file)
           }
           /**
-           * 滑杆正在被拖的键 → 拖到的那一格值。
+           * 滑杆的本地值：拖动中、以及"松手已提交、回包还没落地"这两段时间，界面以它为准。
            *
-           * 为什么要本地状态：滑杆若是"纯受控"（value 只认 state），松手前每一格都要等
-           * 一次 POST 回来才动 —— 滑块就滞后在自己的手指后面，看着就是不跟手。这里拖动时
-           * 只用本地值绘制（立刻跟手），松手才落盘；落盘回来的数再交还给 state。
+           * 为什么必须有一份本地值 —— 这是"滑杆乱跳/波动"的三个来源，缺一个都会复现：
+           *
+           *   1. **纯受控不行**：value 只认 state 的话，松手前每一格都要等一次 POST
+           *      回来才动，滑块永远滞后在自己的手指后面。
+           *   2. **每一格都 setState 也不行**：一次 setState 就是整个主题面板重渲染
+           *      （14 次 presetPreview + 5 张预设卡 + 8 个色块），60–240 事件/秒叠起来
+           *      就是主线程被塞满 —— 滑块跟手，页面发涩。
+           *   3. **只在"开始拖"那一刻记一次、之后不管，同样不行**：拖动期间任何一次
+           *      无关的重渲染（busy 开关、消息自动消失、背景层广播）都会把 `value` 写回
+           *      **props 里那个"开始拖之前"的值** —— 滑块当场弹回旧位置，下一次鼠标移动
+           *      再把它顶回去。眼睛看到的就是"滑块一抖一抖地波动"。
+           *
+           * 所以：真值放 `gripRef`（每格更新，零渲染），组件重渲染时**读 ref**，任何一次
+           * 重渲染都不会把滑块写回旧值；state 只在"开始拖 / 松手 / 回包到达"这三个时刻变，
+           * 一次拖动最多 3 次渲染。
+           *
+           * 松手后**不清**本地值：落盘要等回包，这期间若立刻回到 cfg 的旧值，滑块就会
+           * "松手弹回原处、过一下又跳到你拖的位置"—— 这正是用户报的波动里最扎眼的那一下。
+           * 等 `commit` 里的 `.then` 拿到回包，才把界面交还给真相（服务器夹过的值 / 失败时的旧值）。
            */
-          const [drag, setDrag] = React.useState(null)
+          const gripRef = React.useRef(null)
+          const [grip, setGrip] = React.useState(null)
+          /**
+           * 当前壁纸 + 预设下"字要看得清"所需的幕厚度（引擎的可读性下限）。
+           * 只用来在读数 title 里解释"为什么拖到 0% 画面还是暗的"，不参与任何计算。
+           */
+          const floorRef = React.useRef(null)
+          /** 每根滑杆的读数 `<span>`：拖动时直接改 textContent，绕过 React。 */
+          const readoutRef = React.useRef({})
+          /** 每根滑杆的 `<input>`：拖动时自己改 value（受控输入由 React 管，需要显式同步）。 */
+          const rangeRef = React.useRef({})
           /** 合并成一帧只发一次预览的句柄（range 的 change 事件比帧还密）。 */
           const previewFrame = React.useRef(0)
           const previewNext = React.useRef(null)
@@ -4858,15 +4997,193 @@ window.__ModuleLoader__.load({
                   : window.setTimeout(flushPreview, 16)
             }
           }
-          // 停手：把最后一格落盘（一次 POST，不是每格一次），再结束本地拖动。
-          const commit = (key, value) => {
+
+          /**
+           * 三根滑杆的「单位表」：**界面刻度**与**存盘值**之间的换算，只写在这一处。
+           *
+           * 以前是三套单位各算各的（0–0.8 比例 / 0–10px / 0.3–1.6 倍），为了让读数"看着
+           * 统一"，又把它们硬拗成"量程位置 0–100"：拖到一半显示 50%，可它既不是 50% 的
+           * 遮罩、也不是 50% 的模糊；浓度 1.0×（原图）更是显示成 50%。读数与真值对不上，
+           * 用户自然觉得"不准"。
+           *
+           * 现在读数就是真值，一列看下来能横向比较：
+           *   - 遮罩 0–80%，1% = 0.01 → 80% 恰好是上限 0.8；
+           *   - 模糊 0–80%，1% = 0.125px → 80% 恰好是上限 10px（px 真值同时放进 title）；
+           *   - 浓度 100%–200% 连续（100% = 原图，200% = 2×），1% = 0.01×。
+           *
+           * 量程写在这里，`SCREEN_LIMITS` 只负责"存盘方允许的范围"——两份各管一件事，
+           * 改上限时只需改 SCREEN_LIMITS，toValue / toDisplay 会跟着走。
+           */
+          const SLIDERS = {
+            wallpaperScrim: {
+              min: 0,
+              max: 80,
+              step: 1,
+              toValue: (display) => display / 100,
+              toDisplay: (value) => value * 100,
+              read: (display) => `${display}%`,
+              detail: (value) => `${Math.round(value * 100)}%`,
+            },
+            wallpaperBlur: {
+              min: 0,
+              max: 80,
+              step: 1,
+              toValue: (display) => display / 8,
+              toDisplay: (value) => value * 8,
+              read: (display) => `${display}%`,
+              detail: (value) => `${Math.round(value * 10) / 10}px`,
+            },
+            wallpaperSaturate: {
+              // 100%–200% 连续可调，1% = 0.01×；100%（原图）是下限，也是出厂值。
+              // 低于 100% 的"褪色"没人用，却会让滑杆一半行程落在无色感的一侧。
+              min: 100,
+              max: 200,
+              step: 1,
+              toValue: (display) => display / 100,
+              toDisplay: (value) => value * 100,
+              read: (display) => `${display}%`,
+              detail: (value) => (value === 1 ? '1× 原图' : `${value}×`),
+            },
+          }
+
+          /** 一格的小数位数，由 step 推出来（1 → 0 位，0.01 → 2 位）。 */
+          const decimalsOf = (step) => {
+            const dot = String(step).indexOf('.')
+            return dot === -1 ? 0 : String(step).length - dot - 1
+          }
+
+          /**
+           * 把值吸到滑杆刻度上（并夹进量程）。
+           *
+           * 不吸会怎样：受控 input 的 value 若是 24.5、而 step 是 1，浏览器会把**滑块**
+           * 画在 24 或 25 上，读数却写着 24.5% —— 看到的和存下来的又不是同一个数。
+           * 吸一下，滑块位置、读数、存盘值三者永远一致。
+           *
+           * 浮点尾巴也必须在这里切掉：0.1 + 3 × 0.01 = 0.13000000000000003，这种数会
+           * 一路写进 DOM 的 value 和配置文件里，看着"抖"其实就是它在作怪。
+           */
+          const snapOf = (key, value) => {
+            const spec = SLIDERS[key]
+            if (!Number.isFinite(value)) return spec.min
+            const clamped = Math.max(spec.min, Math.min(spec.max, value))
+            const snapped = spec.min + Math.round((clamped - spec.min) / spec.step) * spec.step
+            return Number(Math.max(spec.min, Math.min(spec.max, snapped)).toFixed(decimalsOf(spec.step)))
+          }
+
+          /** 界面刻度：从存盘值反算，并吸到刻度上。 */
+          const displayOf = (key, value) => snapOf(key, SLIDERS[key].toDisplay(value))
+
+          /**
+           * 这根滑杆此刻该显示什么：**本地值优先**，否则读 cfg 里那份真值。
+           *
+           * 读的是 ref 而不是 state —— 拖动期间若发生无关的重渲染，props 里那份旧值
+           * 会把滑块写回拖动开始前的位置（这就是"一抖一抖"的成因，见 gripRef 的注释）。
+           */
+          const liveDisplay = (key, value) => {
+            const local = gripRef.current
+            if (local !== null && local.key === key) return local.display
+            return displayOf(key, value)
+          }
+
+          /**
+           * 一根滑杆的读数文本。拖动时直接写 DOM，**绕开 React**。
+           *
+           * @param {string} key 线协议键。
+           * @param {number} display 界面刻度值。
+           * @returns {string} 例如 `40%` / `1.30×`。
+           */
+          const readoutText = (key, display) => SLIDERS[key].read(display)
+
+          /** 真值放进 title：刻度是百分比/倍数，px 与倍数才是配置里存的数。 */
+          const titleOf = (key, display) => {
+            const spec = SLIDERS[key]
+            const base = spec.detail(spec.toValue(display))
+            if (key !== 'wallpaperScrim') return base
+            // 遮罩有一层**可读性下限**：壁纸太亮时，引擎会把幕顶到"字还看得清"的厚度
+            // （`decideTheme` 里 `max(用户值, required)`）。这时候读数（用户的意图）和
+            // 画面上的实际厚度不是一个数 —— 不说明，用户只会觉得"拖了没用 / 这个数不准"。
+            // 说明只放在 title 里：悬停可见，界面上不多一个字。
+            const floor = floorRef.current
+            if (!Number.isFinite(floor) || floor <= spec.toValue(display)) return base
+            return `${base} · 实际 ${Math.round(floor * 100)}%（字要看得清的下限）`
+          }
+
+          /**
+           * 把读数贴到 DOM 上（文本 + title），不经过 React。
+           *
+           * @param {HTMLElement | null} node 读数的 `<span>`。
+           * @param {string} key 线协议键。
+           * @param {number} display 界面刻度值。
+           */
+          const paintReadout = (node, key, display) => {
+            if (node === null || node === undefined) return
+            const text = readoutText(key, display)
+            if (node.textContent !== text) node.textContent = text
+            node.title = titleOf(key, display)
+          }
+
+          /**
+           * 把一个值直接贴到滑杆的 DOM 上（滑块 + 读数），不经过 React。
+           *
+           * **这根 range 是"非受控"的：不给 `value`，值只由这里写。**
+           * 这不是偷懒，是踩出来的 ——
+           *
+           * 受控写法（`value={current}` + 每格手改 `input.value`）在真浏览器里必然失败：
+           * React 会在**每个离散事件结束后**把 `input.value` 恢复成"上次渲染的 props 值"
+           * （`restoreControlledState`）。而拖动期间我们故意不重渲染（一渲染就是整页重绘），
+           * 于是每次事件后滑块都被写回**拖动开始那一格**，读数（一个不受 React 管的 span）
+           * 却停在最新值上 —— 屏幕上就是"读数 80%、滑块贴在左边"。
+           *
+           * 非受控之后 React 不再碰这个值，谁写谁算数；外部值变了（换预设、回包落地、
+           * 切页签回来重建节点）由渲染时的 `ref` 回调校正一次（见 slider 里的 ref）。
+           *
+           * @param {string} key 线协议键。
+           * @param {number} display 界面刻度值。
+           */
+          const paintSliderDom = (key, display) => {
+            const input = rangeRef.current[key]
+            if (input !== null && input !== undefined && Number(input.value) !== display) {
+              input.value = String(display)
+            }
+            paintReadout(readoutRef.current[key], key, display)
+          }
+
+          /**
+           * 松手：一次落盘（不是每格一次），本地值继续顶到回包落地。
+           *
+           * @param {string} key 线协议键。
+           * @param {Event | null} event 有事件就取控件此刻的值（最准），否则用本地记录的那一格。
+           */
+          const commit = (key, event) => {
+            const spec = SLIDERS[key]
+            const local = gripRef.current
+            const raw = event !== null && event !== undefined && event.target ? Number(event.target.value) : NaN
+            const display = Number.isFinite(raw)
+              ? snapOf(key, raw)
+              : local !== null && local.key === key
+                ? local.display
+                : null
+            if (display === null) return
+            // 攒在 rAF 里的最后一帧可能还没送出去：先取消它，把最终值直接派发 ——
+            // 否则松手瞬间画面会停在上一格（看着像"松手回跳一下"）。
             if (previewFrame.current !== 0 && typeof window.cancelAnimationFrame === 'function') {
               window.cancelAnimationFrame(previewFrame.current)
               previewFrame.current = 0
             }
             previewNext.current = null
-            setDrag(null)
-            wallCfg({ [key]: value }, t('saved'))
+            const stored = spec.toValue(display)
+            window.dispatchEvent(new CustomEvent('dsa:wall-preview', { detail: { [engineKeyOf(key)]: stored } }))
+            // live: false —— 手已经松开，但**这个值仍然算数**，一直顶到回包落地。
+            gripRef.current = { key, display, live: false }
+            setGrip(gripRef.current)
+            const settle = () => {
+              const now = gripRef.current
+              // 期间用户又动了同一根（或另一根）：这次回包不再是"最后那句话"，别抢镜。
+              if (now === null || now.key !== key || now.live) return
+              gripRef.current = null
+              setGrip(null)
+            }
+            wallCfg({ [key]: stored }, t('saved')).then(settle, settle)
           }
 
           const activePreset = PRESETS.find((item) => item.id === cfg.preset) || PRESETS[0]
@@ -4880,24 +5197,33 @@ window.__ModuleLoader__.load({
             surfaceBlur: cfg.surfaceBlur,
             textColor: cfg.textColor,
           })
-          /**
-           * 幕浓度的滑杆下限：用户可以把幕调薄，但**不能薄到字看不清**。
-           * 这是"壁纸不影响用户看字"这条承诺在 UI 上的落点 —— 刻度到顶就是 0.92，
-           * 但下限由当前画面的决策给出（拿不到画面摘要时用预设值兜底）。
-           *
-           * 注意这里不直接用 `liveDecision`：那份摘要来自背景层的广播，广播链路任何
-           * 一环没送到（背景层还没起来、规则被宿主拦了），下限就会退回预设值、卡片上
-           * 的对比度也会整排消失 —— 看着就像"这些数字是假的"。所以统一走 presetPreview
-           * （它自己会退回内置取色）。
-           */
           // 读数跟着**当前选中的字体颜色**走：不然选了紫、数字还停在自动色那一份，
           // 用户会以为"没生效"（这正是上一轮报上来的现象之一）。
           const liveNow = presetPreview(cfg.preset, shown.textColor)
           const liveContrast = liveNow !== null && typeof liveNow.contrast === 'number' ? liveNow.contrast : null
+          // 引擎算出来的可读性下限（`decideTheme` 的 required）：遮罩读数在 title 里用它
+          // 解释"我拖到 0%，画面为什么还压着一层暗"。
+          floorRef.current = liveNow !== null && Number.isFinite(liveNow.required) ? liveNow.required : null
 
-          const slider = (key, label, min, max, step, value, unit) => {
-            const dragging = drag !== null && typeof drag[key] === 'number'
-            const current = dragging ? drag[key] : value
+          /**
+           * 一根滑杆。刻度、步进、读数格式全部来自 `SLIDERS`，这里只管布局与交互。
+           *
+           * 交互分工（"丝滑"的全部秘密就在这里）：
+           *   - **每一格**：只改 DOM（滑块 + 读数）+ 让壁纸层重画，零 React 渲染；
+           *   - **开始拖 / 松手 / 回包到达**：才动 state，一次拖动最多 3 次渲染；
+           *   - **重渲染时读 `gripRef`**，所以拖动期间任何一次无关的重渲染都不会把滑块
+           *     写回旧值（那正是"滑块一抖一抖"的成因）。
+           *
+           * @param {string} key 线协议键（`wallpaperScrim` / `wallpaperBlur` / `wallpaperSaturate`）。
+           * @param {string} label 行标题。
+           * @param {number} value 存盘值（来自 cfg，已由 resolvePreset 合过预设）。
+           */
+          const slider = (key, label, value) => {
+            const spec = SLIDERS[key]
+            const current = liveDisplay(key, value)
+            // 这根滑杆正被用户攥着（拖到一半，或刚松手等回包）：别禁用它。
+            // busy 一置真就 disabled 的话，滑块会在松手那一刻被禁用、还得再点一次。
+            const held = grip !== null && grip.key === key
             return h(
               'div',
               { className: 'dsa-set-row' },
@@ -4907,38 +5233,62 @@ window.__ModuleLoader__.load({
                 { className: 'dsa-set-right' },
                 h(
                   'span',
-                  { className: 'dsa-set-sec' },
-                  `${Math.round(current * (unit === '%' ? 100 : 1))}${unit === '%' ? '%' : unit}`,
+                  {
+                    className: 'dsa-set-sec',
+                    // 真值（px / 倍数）放 title：刻度是百分比/倍数，真值才是配置里存的数。
+                    title: titleOf(key, current),
+                    // 拖动时直接改它，不经 React（见 paintReadout）；
+                    // 每次提交也借这个回调把读数校正到 current（外部值变了、节点重建了都会走到）。
+                    ref: (node) => {
+                      readoutRef.current[key] = node
+                      paintReadout(node, key, current)
+                    },
+                  },
+                  readoutText(key, current),
                 ),
                 h('input', {
                   type: 'range',
                   className: 'dsa-set-range',
-                  min,
-                  max,
-                  step,
-                  value: current,
+                  min: spec.min,
+                  max: spec.max,
+                  step: spec.step,
                   'aria-label': label,
-                  // 拖动期间不禁用：busy 一置真滑杆会自己松手，体验更差。
-                  disabled: dragging ? false : busy || !wallpaperOn,
-                  // 每一格：只本地记值 + 让壁纸层自己重画（不 POST，也不重渲染整页）。
+                  // **不给 value**：非受控。受控 + 手改 DOM 会被 React 每个事件后回写成
+                  // "拖动第一格"的值，读数却停在最新值 —— 那正是"读数 80%、滑块在左边"。
+                  // 值只由 paintSliderDom 写；节点新建/外部值变化时由这个回调校正一次。
+                  ref: (node) => {
+                    rangeRef.current[key] = node
+                    if (node !== null && node !== undefined && node.value !== String(current)) {
+                      node.value = String(current)
+                    }
+                  },
+                  disabled: held ? false : busy || !wallpaperOn,
+                  // 每一格：**只改 DOM + 让壁纸层重画**，不动 state、不 POST。
+                  //
+                  // 以前这里每格都 setDrag，等于每次拖动事件都把整个主题面板重渲染
+                  // （14 次 presetPreview + 5 张预设卡 + 8 个色块）。单次 0.68ms 看着不多，
+                  // 但 60–240 事件/秒加起来就是每秒几十到上百毫秒的主线程占用 ——
+                  // 滑块跟手，页面却发涩。这就是"滑杆不够丝滑"。
                   onChange: (event) => {
-                    const next = Number(event.target.value)
-                    if (!Number.isFinite(next)) return
-                    setDrag((prev) => ({ ...(prev || {}), [key]: next }))
-                    sendPreview(key, next)
+                    const display = snapOf(key, Number(event.target.value))
+                    paintSliderDom(key, display)
+                    // 本地真值每格都更新；但**只在"开始拖"那一刻**动 state。
+                    const now = gripRef.current
+                    if (now !== null && now.key === key && now.live) {
+                      now.display = display
+                    } else {
+                      gripRef.current = { key, display, live: true }
+                      setGrip(gripRef.current)
+                    }
+                    sendPreview(key, spec.toValue(display))
                   },
-                  // 松手：一次落盘。
-                  onPointerUp: (event) => {
-                    const next = Number(event.target.value)
-                    if (Number.isFinite(next)) commit(key, next)
-                  },
-                  // 键盘/无障碍路径没有 pointerup，用 change 收尾。
-                  onKeyUp: (event) => {
-                    const next = Number(event.target.value)
-                    if (Number.isFinite(next)) commit(key, next)
-                  },
+                  // 松手：一次落盘。键盘/无障碍路径没有 pointerup，用 keyup 收尾；
+                  // 焦点被别的东西抢走时用 blur 兜底。
+                  onPointerUp: (event) => commit(key, event),
+                  onKeyUp: (event) => commit(key, event),
                   onBlur: () => {
-                    if (dragging) commit(key, current)
+                    const now = gripRef.current
+                    if (now !== null && now.key === key && now.live) commit(key, null)
                   },
                 }),
               ),
@@ -4967,16 +5317,18 @@ window.__ModuleLoader__.load({
                 'data-tone': surface,
                 disabled: busy,
                 title: decision ? `${preset.name} · ${decision.contrast.toFixed(2)}:1` : preset.name,
-                // 预设是"整套观感"：必须把滑杆的残留值一并清回 auto。
-                // 只写 preset 的话，之前拖过的 scrim/blur/saturate/glass 会继续
-                // 盖住新预设 —— 幕浓度和玻璃纹丝不动，用户看到的就是"点了没反应"。
+                // 预设是"整套**颜色**观感"：只换颜色配方（釉色 / 面板磨砂 / 玻璃配方）。
+                //
+                // **不要再写 wallpaperScrim / wallpaperBlur / wallpaperSaturate**：
+                // 三根滑杆是用户的，五套预设在这三项上本来就是同一组值（0 / 0 / 1），
+                // 所以"点预设把它们清回 auto"不是换观感，而是把用户调好的东西删掉 ——
+                // 这正是用户报的"时不时还原为默认值"。清 `'auto'` 在宿主侧等于**删除**
+                // 这个键，磁盘上的值就真没了（刷新也回不来）。
                 onClick: () =>
                   wallCfg(
                     {
                       wallpaperPreset: preset.id,
-                      wallpaperScrim: 'auto',
-                      wallpaperBlur: 'auto',
-                      wallpaperSaturate: 'auto',
+                      // 玻璃配方归预设所有，换预设必须跟着换，否则旧配方盖住新预设。
                       wallpaperGlass: 'auto',
                     },
                     t('saved'),
@@ -5100,9 +5452,12 @@ window.__ModuleLoader__.load({
             //
             // 玻璃厚度那根已经收掉：实测只有 0 才看得见壁纸，往上加就是一层实色，留着只是误导。
             // 面板遮挡全靠遮罩厚度一根；可读性下限挂在引擎里，与滑杆无关。
-            slider('wallpaperScrim', t('wallScrim'), SCREEN_LIMITS.scrim[0], SCREEN_LIMITS.scrim[1], 0.02, shown.scrim, '%'),
-            slider('wallpaperBlur', t('wallBlur'), SCREEN_LIMITS.blur[0], SCREEN_LIMITS.blur[1], 1, shown.blur, 'px'),
-            slider('wallpaperSaturate', t('wallSaturate'), SCREEN_LIMITS.saturate[0], SCREEN_LIMITS.saturate[1], 0.05, shown.saturate, '×'),
+            //
+            // 三根滑杆的刻度就是**真值**（见 SLIDERS）：遮罩 0–80%、模糊 0–80%、
+            // 浓度 100%–200%。刻度、步进、读数格式写在那张表里，这里只传"存盘值"。
+            slider('wallpaperScrim', t('wallScrim'), shown.scrim),
+            slider('wallpaperBlur', t('wallBlur'), shown.blur),
+            slider('wallpaperSaturate', t('wallSaturate'), shown.saturate),
             // ── ④ 素材：所有视频与图片都能当壁纸 ──
             h(
               'div',

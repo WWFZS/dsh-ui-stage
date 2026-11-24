@@ -668,8 +668,14 @@ export const DEFAULT_CONFIG = Object.freeze({
   wallpaperEnabled: false,
   /** 壁纸素材：'' = 不铺；绝对路径或包内相对路径 = 自己的文件（与开机动画共用素材库）。 */
   wallpaperFile: '',
-  /** 出厂预设 id（见 lib/wallpaper.mjs 的 PRESETS）；可被下面几项微调覆盖。 */
-  wallpaperPreset: 'readable',
+  /**
+   * 出厂预设 id（见 lib/wallpaper.mjs 的 PRESETS）；可被下面几项微调覆盖。
+   *
+   * 必须是 PRESETS 里真实存在的 id：`frosted` 是第一套。写一个已删掉的旧 id
+   * （曾经是 `readable`）也能跑 —— `resolvePreset` 会回落到出厂值 —— 但那样
+   * 配置里存的是一个"语义不明"的名字，和界面显示的预设对不上。
+   */
+  wallpaperPreset: 'frosted',
   /** 微调：没写的字段取预设值，写了就夹进安全区间。'auto' = 跟随预设。 */
   //
   // 默认全是 0 = **最透**：壁纸原样透出来，面板不遮挡。想加遮挡是用户自己的选择，

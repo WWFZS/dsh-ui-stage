@@ -64,13 +64,49 @@ function createReact(onImageSrc) {
   /** @type {any[]} */
   let currentHooks = []
   let effects = []
+  /**
+   * 每次渲染按"第几个带 ref 的元素"复用同一个假 DOM 节点。
+   *
+   * 为什么必须复用：真 React 重渲染时元素实例是**复用**的，所以拖动中直接改
+   * `node.textContent` 之后，下一次渲染读到的还是那个节点、值还在。之前每次渲染
+   * 新建节点，于是"拖动直接改 DOM"这条路径一测就丢 —— 不是代码坏了，是垫片失真。
+   */
+  let refSlots = []
+  let refSlotIndex = 0
+  /**
+   * 每次 useState 的 setter **真的改变值时**记一笔（记录 hook 序号）。
+   *
+   * 用途：断言"拖动 20 格只更新 state 1 次"。真 React 里 setState 值变了就会重渲染，
+   * 所以这个计数就是"组件被要求重画了几次"的诚实代理。没有它，
+   * "拖动不触发整页重渲染"这条测试对旧代码也会通过 —— 那就成了摆设。
+   */
+  let stateUpdates = []
 
   const React = {
     createElement(type, props, ...children) {
       const flat = children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false)
       /** 渲染结果上的 img 才对应真实 DOM：把地址发出去看看真实 `<img>` 会请求什么。 */
       if (String(type).toLowerCase() === 'img') onImageSrc?.(props?.src)
-      return { type, props: props ?? {}, children: flat }
+      // 真 React 会在挂载后调用 ref 回调。滑杆的"直接改 DOM"路径（拖动时不重渲染）
+      // 全靠 ref 拿到读数与滑块元素，垫片不调的话那条路径在测试里永远为空 ——
+      // 于是"拖动是否真的改了 DOM"就测不出来。
+      let refNode = null
+      if (props !== null && props !== undefined && typeof props.ref === 'function') {
+        const slot = refSlotIndex++
+        if (refSlots[slot] === undefined) {
+          refSlots[slot] = {
+            textContent: '',
+            title: '',
+            value: '',
+            style: {},
+            setAttribute() {},
+            removeAttribute() {},
+          }
+        }
+        refNode = refSlots[slot]
+        props.ref(refNode)
+      }
+      return { type, props: props ?? {}, children: flat, __refNode: refNode }
     },
     useState(initial) {
       const index = hookIndex++
@@ -78,7 +114,13 @@ function createReact(onImageSrc) {
         currentHooks[index] = typeof initial === 'function' ? initial() : initial
       }
       const setValue = (next) => {
-        currentHooks[index] = typeof next === 'function' ? next(currentHooks[index]) : next
+        const before = currentHooks[index]
+        const after = typeof next === 'function' ? next(before) : next
+        currentHooks[index] = after
+        // 真 React：setState 且值**真的变了**就会重渲染组件。
+        // 不 record 的话，"拖动期间不许重渲染"这条在垫片里根本测不出来 ——
+        // 旧代码每格 setDrag 也能"通过"，测试就成了摆设。这里如实记账。
+        if (after !== before) stateUpdates.push(index)
       }
       return [currentHooks[index], setValue]
     },
@@ -105,6 +147,12 @@ function createReact(onImageSrc) {
     __reset() {
       hookIndex = 0
       effects = []
+      refSlotIndex = 0
+      stateUpdates = []
+    },
+    /** 这一轮渲染期间，有多少次 setState 真的改了值（= 真 React 会重渲染几次）。 */
+    __stateUpdates() {
+      return stateUpdates.slice()
     },
     __effects() {
       return effects
@@ -176,6 +224,8 @@ function findByProp(node, prop) {
 async function loadClient(options = {}) {
   const React = createReact((src) => calls.push({ type: 'img', src }))
   const calls = []
+  /** 乱序回包的闸门（见 fetch 垫片的 `responseFor`）。 */
+  const gates = []
   /** 惰性 interval 句柄：只记账、不真的触发（见 window.setInterval 垫片）。 */
   const intervals = []
   let intervalSeq = 0
@@ -372,6 +422,18 @@ async function loadClient(options = {}) {
           json: async () => options.selfResult ?? { ok: true },
         })
       }
+      // 乱序回包测试钩子：给了 `responseFor(body)` 就由它决定这一次回什么，
+      // 并且**返回一个可外部 resolve 的 Promise** —— 测试因此能人为制造
+      // "先发的请求后回来"（真实网络里这完全可能发生）。
+      const custom = options.responseFor?.(init?.body ? JSON.parse(init.body) : null)
+      if (custom !== undefined) {
+        let settle
+        const gate = new Promise((resolve) => {
+          settle = resolve
+        })
+        gates.push({ settle: () => settle({ ok: true, json: async () => custom }) })
+        return gate
+      }
       return Promise.resolve({
         ok: true,
         json: async () => ({ ...status, self: options.self ?? { installed: false, selected: false } }),
@@ -471,7 +533,7 @@ async function loadClient(options = {}) {
     return Page()
   }
 
-  return { React, render, calls, dicts, context }
+  return { React, render, calls, dicts, context, gates }
 }
 
 // ─────────────────────────── 测试 ───────────────────────────
@@ -1687,21 +1749,21 @@ await check('主题页签：预设卡上每格都有对比度数字（不依赖�
   }
 })
 
-await check('主题页签：点预设卡 → 写 preset 并把玻璃/模糊/幕全部清回 auto', async () => {
-  const { render, calls } = await loadClient({ status: themeStatus() })
+await check('主题页签：点预设卡 → 只换颜色配方，不动三根滑杆', async () => {
+  const { render, calls } = await loadClient({ status: themeStatus({ scrim: 0.4, blur: 6, saturate: 1.5 }) })
   const tree = await openThemeTab(render)
-  const matte = findAll(tree, 'dsa-set-preset').find((node) => texts({ children: node.children }).includes('暗'))
-  assert.ok(matte, '找不到"亮"预设')
-  matte.props.onClick()
+  const night = findAll(tree, 'dsa-set-preset').find((node) => texts({ children: node.children }).includes('暗'))
+  assert.ok(night, '找不到「暗」预设')
+  night.props.onClick()
   const post = calls.find((call) => call.type === 'fetch' && call.init?.method === 'POST')
   assert.ok(post, '点预设没有发 POST')
-  // 只写 preset 是不够的：之前拖过的 scrim/blur/saturate/glassAlpha 会继续
-  // 盖住新预设，幕浓度和玻璃纹丝不动 → 用户看到的就是"点了没反应"。必须一并清回 auto。
+  // 用户报的 bug：三根滑杆"时不时还原为默认值"。根因之一就是这里 —— 点预设时
+  // 顺手把 wallpaperScrim/Blur/Saturate 写成 'auto'，而宿主把 'auto' 当成
+  // **删除这个键**，于是磁盘上用户调好的值真没了。
+  // 五套预设在这三项上本来就是同一组值（0 / 0 / 1），清它们不是"换观感"，
+  // 只是把用户调好的东西删掉。所以载荷里必须**只有**预设自己的键。
   assert.deepEqual(JSON.parse(post.init.body), {
     wallpaperPreset: 'night',
-    wallpaperScrim: 'auto',
-    wallpaperBlur: 'auto',
-    wallpaperSaturate: 'auto',
     wallpaperGlass: 'auto',
   })
 })
@@ -1743,15 +1805,21 @@ await check('主题页签：只剩三根滑杆（遮罩厚度 / 壁纸模糊 / �
     ['遮罩厚度', '壁纸模糊', '色彩浓度'],
   )
 })
-await check('遮罩与壁纸模糊的上限收紧到 80% / 10px', async () => {
+await check('三根滑杆的量程：遮罩 0–80%、模糊 0–80%（= 10px）、浓度 100%–200%', async () => {
+  // 量程与"存盘单位"是两件事：滑杆走**界面刻度**（百分比 / 倍数），
+  // 存盘仍是 scrim 0–0.8、blur 0–10px、saturate 1–2×。
   const wall = await import('../lib/wallpaper.mjs')
   assert.equal(wall.SCREEN_LIMITS.scrim[1], 0.8, '遮罩上限不是 80%')
   assert.equal(wall.SCREEN_LIMITS.blur[1], 10, '壁纸模糊上限不是 10px')
+  assert.deepEqual([...wall.SCREEN_LIMITS.saturate], [1, 2], '色彩浓度量程不是 1×–2×')
   const { render } = await loadClient({ status: themeStatus() })
   const tree = await openThemeTab(render)
   const ranges = (label) => findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === label)
-  assert.equal(Number(ranges('遮罩厚度').props.max), 0.8)
-  assert.equal(Number(ranges('壁纸模糊').props.max), 10)
+  const box = (label) => [Number(ranges(label).props.min), Number(ranges(label).props.max), Number(ranges(label).props.step)]
+  assert.deepEqual(box('遮罩厚度'), [0, 80, 1], '遮罩滑杆不是 0–80%、一格 1%')
+  assert.deepEqual(box('壁纸模糊'), [0, 80, 1], '模糊滑杆不是 0–80%、一格 1%')
+  // 三档：min 1 / max 2 / step 0.5 —— 滑杆只有 1×、1.5×、2× 三个落点。
+  assert.deepEqual(box('色彩浓度'), [100, 200, 1], '浓度滑杆不是 100%–200%、一格 1%')
 })
 
 await check('主题页签：壁纸关闭时滑杆禁用（没有壁纸可调）', async () => {
@@ -1842,13 +1910,245 @@ await check('主题滑杆：拖动只本地跟手，松手才落盘一次', asyn
   const scrim = findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === '遮罩厚度')
   assert.ok(scrim, '没有遮罩滑杆')
   // 三格拖拽：每一格都只改本地值，别急着 POST（POST 一次要等回包，滑块就滞后了）。
-  for (const value of ['0.4', '0.5', '0.6']) scrim.props.onChange({ target: { value } })
+  // 滑杆的 value 是**界面刻度**（0–80 的百分比），存盘时才换算成 0–0.8 的比例。
+  for (const value of ['40', '50', '60']) scrim.props.onChange({ target: { value } })
   const posted = calls.filter((call) => call.type === 'fetch' && call.init?.method === 'POST')
   assert.equal(posted.length, 0, '拖动过程中就在发请求了')
-  scrim.props.onPointerUp({ target: { value: '0.6' } })
+  scrim.props.onPointerUp({ target: { value: '60' } })
   const after = calls.filter((call) => call.type === 'fetch' && call.init?.method === 'POST')
   assert.equal(after.length, 1, `松手后应该只落盘一次，实际 ${after.length} 次`)
-  assert.equal(JSON.parse(after[0].init.body).wallpaperScrim, 0.6)
+  assert.equal(JSON.parse(after[0].init.body).wallpaperScrim, 0.6, '60% 落盘不是 0.6')
+})
+
+await check('主题滑杆：读数就是真值，不再是"量程位置"', async () => {
+  // 以前为了让三根"看着统一"，读数被硬拗成"量程位置 0–100"：遮罩 0.4 显示 50%、
+  // 模糊 6px 显示 60%、浓度 1.3× 显示 77% —— 三个数都对不上配置里存的数，
+  // 用户当然觉得"不准"。
+  //
+  // 现在读数就是那个数：遮罩 0.4 → 40%、模糊 6px → 48%（1% = 0.125px）、
+  // 浓度 → 1.5×。换算规则只有一处（SLIDERS 的 toDisplay / read）。
+  const { render } = await loadClient({ status: themeStatus({ scrim: 0.4, blur: 6, saturate: 1.5 }) })
+  const tree = await openThemeTab(render)
+  const rows = findByClass(tree, 'dsa-set-row')
+  /** 某根滑杆所在行里的读数。 */
+  const readOf = (label) => {
+    const row = rows.find((node) => texts({ children: node.children }).includes(label))
+    assert.ok(row, `找不到「${label}」那一行`)
+    return findByClass(row, 'dsa-set-sec').map((node) => node.children.join(''))[0]
+  }
+  assert.equal(readOf('遮罩厚度'), '40%', `遮罩读数是 ${readOf('遮罩厚度')}`)
+  assert.equal(readOf('壁纸模糊'), '48%', `模糊读数是 ${readOf('壁纸模糊')}（6px 应该是 48%）`)
+  assert.equal(readOf('色彩浓度'), '150%', `色彩浓度读数是 ${readOf('色彩浓度')}（1.5× 应该显示 150%）`)
+  // 真值（px / 原图说明）留在 title 里，刻度之外的信息不丢。
+  const titleOf = (label) => {
+    const row = rows.find((node) => texts({ children: node.children }).includes(label))
+    return findByClass(row, 'dsa-set-sec')[0].props.title
+  }
+  assert.equal(titleOf('壁纸模糊'), '6px', `模糊的 px 真值没进 title：${titleOf('壁纸模糊')}`)
+  assert.equal(titleOf('色彩浓度'), '1.5×', `浓度的倍数没进 title：${titleOf('色彩浓度')}`)
+})
+
+await check('色彩浓度：100%–200% 连续，默认 100%（原图）', async () => {
+  const { render, calls } = await loadClient({ status: themeStatus({ scrim: 0, blur: 0, saturate: 1 }) })
+  const tree = await openThemeTab(render)
+  const range = findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === '色彩浓度')
+  assert.ok(range, '没有色彩浓度滑杆')
+  // 出厂就是原图：读数 `100%`，title 里写明"原图"（倍数只在这里出现）。
+  const row = findByClass(tree, 'dsa-set-row').find((node) => texts({ children: node.children }).includes('色彩浓度'))
+  const sec = findByClass(row, 'dsa-set-sec')[0]
+  assert.equal(sec.children.join(''), '100%', `默认读数不是 100%：${sec.children.join('')}`)
+  assert.equal(sec.props.title, '1× 原图', `默认的说明不是"原图"：${sec.props.title}`)
+  // 连续：一格 1%，任何百分比都能落，不再吸到 1×/1.5×/2× 三个落点。
+  assert.equal(Number(range.props.step), 1, '一格不是 1%')
+  assert.equal(Number(range.props.min), 100, '下限不是 100%')
+  assert.equal(Number(range.props.max), 200, '上限不是 200%')
+  // 170% 是最有说服力的：它在"三档"那套里根本落不下去。
+  range.props.onChange({ target: { value: '170' } })
+  range.props.onPointerUp({ target: { value: '170' } })
+  const post = calls.filter((call) => call.type === 'fetch' && call.init?.method === 'POST').pop()
+  assert.equal(JSON.parse(post.init.body).wallpaperSaturate, 1.7, `170% 落盘成了 ${post.init.body}`)
+})
+
+await check('主题滑杆：拖动期间不触发 React 重渲染（丝滑的关键）', async () => {
+  // 用户报"滑杆不够丝滑"。根因不是算法慢（一次渲染才 0.68ms），而是**每格拖动事件
+  // 都 setDrag → 整个主题面板重渲染**：14 次 presetPreview（5 张预设卡 + 8 个色块
+  // + 1 次读数）全跑一遍。60–240 事件/秒叠起来就是每秒几十到上百毫秒的主线程占用，
+  // 滑块跟手但页面发涩。
+  //
+  // 现在的分工：每格只改 DOM（滑块 value + 读数）+ 让壁纸层重画，**零 React 渲染**；
+  // 只有"开始拖"和"松手"才动 state。这条测试锁的就是"每格不许动 state"。
+  const { render, calls, React } = await loadClient({ status: themeStatus({ scrim: 0, blur: 0, saturate: 1 }) })
+  let tree = await openThemeTab(render)
+  const scrim = () => findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === '遮罩厚度')
+  /** 遮罩那根滑杆右侧读数的**真 DOM 节点**（不是组件树里的文本）。 */
+  const scrimReadout = () => {
+    const row = findByClass(tree, 'dsa-set-row').find((n) => texts({ children: n.children }).includes('遮罩厚度'))
+    return findByClass(row, 'dsa-set-sec')[0].__refNode
+  }
+
+  // 拖第一格：这一刻允许更新 state 一次（为了切 disabled）。
+  scrim().props.onChange({ target: { value: '20' } })
+  tree = await render()
+  // 20% 就是 20% —— 读数是真值，不再换算成什么"量程位置"。
+  assert.equal(scrimReadout().textContent, '20%', `第一格没写进 DOM：${scrimReadout().textContent}`)
+
+  // 再拖 20 格：**一格都不许再更新 state**（真 React 里那就是 20 次整页重渲染），
+  // 但 DOM 读数必须一路跟着走。
+  const beforeUpdates = React.__stateUpdates().length
+  for (let i = 0; i < 20; i += 1) {
+    scrim().props.onChange({ target: { value: String(22 + i) } })
+  }
+  const updates = React.__stateUpdates().length - beforeUpdates
+  assert.equal(updates, 0, `拖了 20 格却更新了 ${updates} 次 state（真 React 会整页重渲染 ${updates} 次）`)
+  // 期间没有任何一次 render()：如果组件还靠 setGrip 驱动，DOM 读数就还停在 20%。
+  assert.notEqual(scrimReadout().textContent, '20%', '拖了 20 格，读数一点没变 —— 说明没有直接改 DOM')
+  assert.match(scrimReadout().textContent, /^\d+%$/, `读数不是百分比：${scrimReadout().textContent}`)
+  // 松手只落盘一次。
+  const postsBefore = calls.filter((call) => call.type === 'fetch' && call.init?.method === 'POST').length
+  scrim().props.onPointerUp({ target: { value: '60' } })
+  const postsAfter = calls.filter((call) => call.type === 'fetch' && call.init?.method === 'POST').length
+  assert.equal(postsAfter - postsBefore, 1, `松手应该只落盘一次，实际 ${postsAfter - postsBefore} 次`)
+  assert.equal(JSON.parse(calls.filter((call) => call.type === 'fetch' && call.init?.method === 'POST').pop().init.body).wallpaperScrim, 0.6)
+})
+
+await check('主题滑杆：拖动中途发生重渲染，滑块不许被写回拖动前的值', async () => {
+  // 用户报的"一抖一抖"的直接成因：本地值若只在"开始拖"那一刻记一次，之后每一格的
+  // 值只写在 DOM 上；此时任何一次无关的重渲染（busy 开关、消息自动消失、背景层广播）
+  // 都会把受控 input 的 value 写成**开头记的那一格** —— 滑块当场弹回起点，
+  // 下一次鼠标移动再把它顶回去。
+  //
+  // 现在真值在 gripRef 里每格都更新，重渲染读的是它，所以拖到第几格就渲染第几格。
+  const { render } = await loadClient({ status: themeStatus({ scrim: 0, blur: 0, saturate: 1 }) })
+  let tree = await openThemeTab(render)
+  const range = () => findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === '遮罩厚度')
+  const readout = () => {
+    const row = findByClass(tree, 'dsa-set-row').find((node) => texts({ children: node.children }).includes('遮罩厚度'))
+    return findByClass(row, 'dsa-set-sec')[0].children.join('')
+  }
+  // 滑杆是**非受控**的（不给 value），值只能从它自己的 DOM 节点读 —— 这本身就是约定：
+  // 传了 value，React 会在每个事件后把控件回写成"拖动第一格"的值（真浏览器实测）。
+  const inputValue = () =>
+    findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === '遮罩厚度').__refNode.value
+  range().props.onChange({ target: { value: '20' } })
+  tree = await render()
+  range().props.onChange({ target: { value: '41' } })
+  // 这次 render 相当于"拖动期间来了一次无关的重渲染"。
+  tree = await render()
+  assert.equal(inputValue(), '41', `重渲染把滑块写回了 ${inputValue()}（应该还是 41）`)
+  assert.equal(readout(), '41%', `重渲染把读数写回了 ${readout()}（应该还是 41%）`)
+})
+
+await check('主题滑杆：range 必须是非受控的（受控 + 手改 DOM 会被 React 回写）', async () => {
+  // 真浏览器实测的坑：`value={X}` 的 range 会在**每个离散事件后**被 React 恢复成
+  // "上次渲染的 props 值"。拖动期间我们故意不重渲染（一渲染就是整页重绘），于是每次
+  // 事件后滑块都被写回拖动开始那一格 —— 读数 80%、滑块却贴在左边，用户看到的就是
+  // "都拉满 80% 了，还没占满"。所以这根 range **不许有 value / defaultValue**，
+  // 值只由 paintSliderDom 与 ref 回调写。
+  const { render } = await loadClient({ status: themeStatus({ scrim: 0.4, blur: 6, saturate: 1.5 }) })
+  const tree = await openThemeTab(render)
+  for (const node of findAll(tree, 'dsa-set-range').filter((item) => ['遮罩厚度', '壁纸模糊', '色彩浓度'].includes(item.props['aria-label']))) {
+    assert.equal(node.props.value, undefined, `${node.props['aria-label']} 还是受控的（传了 value）`)
+    assert.equal(node.props.defaultValue, undefined, `${node.props['aria-label']} 传了 defaultValue，同样会被 React 回写`)
+  }
+})
+
+await check('主题滑杆：松手后回包没落地之前，滑块不许弹回旧值', async () => {
+  // "波动"里最扎眼的那一下：松手瞬间滑块**弹回拖动前的位置**，等回包到了再跳回来。
+  // 根因是松手就把本地值清掉、界面立刻回到 cfg 里的旧值（而 cfg 要等 POST 回包才更新）。
+  //
+  // 现在的约定：松手后本地值继续顶着（只把 live 置 false），回包落地才交还给 cfg。
+  const { render, gates } = await loadClient({
+    status: themeStatus({ scrim: 0, blur: 0, saturate: 1 }),
+    // 回包压在闸门里 —— 真实网络里那几毫秒就是这个窗口。
+    // 只拦遮罩那一次 POST：GET 状态与其它请求照常立刻回，否则连首屏都挂在那儿。
+    responseFor: (body) =>
+      body !== null && typeof body === 'object' && 'wallpaperScrim' in body
+        ? themeStatus({ scrim: body.wallpaperScrim, blur: 0, saturate: 1 })
+        : undefined,
+  })
+  let tree = await openThemeTab(render)
+  const range = () => findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === '遮罩厚度')
+  const readout = () => {
+    const row = findByClass(tree, 'dsa-set-row').find((node) => texts({ children: node.children }).includes('遮罩厚度'))
+    return findByClass(row, 'dsa-set-sec')[0].children.join('')
+  }
+  range().props.onChange({ target: { value: '40' } })
+  tree = await render()
+  range().props.onPointerUp({ target: { value: '40' } })
+  tree = await render()
+  const inputValue = () =>
+    findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === '遮罩厚度').__refNode.value
+  assert.equal(gates.length, 1, `松手没有落盘（闸门里 ${gates.length} 个请求）`)
+  assert.equal(readout(), '40%', `回包还没到，读数就弹回 ${readout()} 了`)
+  assert.equal(inputValue(), '40', `回包还没到，滑块就被写回 ${inputValue()} 了`)
+  // 回包落地：服务器回的就是 40%，界面不该有任何跳动。
+  gates[0].settle()
+  for (let i = 0; i < 40; i += 1) await Promise.resolve()
+  tree = await render()
+  assert.equal(readout(), '40%', `回包落地后读数变成了 ${readout()}`)
+  assert.equal(inputValue(), '40', `回包落地后滑块变成了 ${inputValue()}`)
+})
+
+await check('主题滑杆：先发的请求后回来时，不许把刚调好的值盖回去', async () => {
+  // 用户报"三根滑杆时不时还原为默认值"的**另一半**原因：连着动两根滑杆时两个 POST
+  // 同时在飞，而回包顺序不保证与发出顺序一致。先发的那个带着**旧状态**回来，
+  // 会把已经调好的值盖回去 —— 界面上就是"刚调好，过一下自己弹回默认"。
+  // 磁盘上其实是对的，错的只是这份界面状态，所以刷新一下又好。
+  //
+  // 关键：假宿主必须**累积**状态（和真宿主一样，每次写都在上一份基础上改），
+  // 这样每个回包都是"那一刻的完整真相"—— 于是后到的旧回包确实带着过期的 blur。
+  let fake = themeStatus({ scrim: 0, blur: 0, saturate: 1 })
+  const { render, calls, gates } = await loadClient({
+    status: fake,
+    responseFor: (body) => {
+      if (body === null || typeof body !== 'object') return undefined
+      if (body.wallpaperScrim === undefined && body.wallpaperBlur === undefined) return undefined
+      if (body.wallpaperScrim !== undefined) fake = themeStatus({ ...fake.wallpaper, scrim: body.wallpaperScrim })
+      if (body.wallpaperBlur !== undefined) fake = themeStatus({ ...fake.wallpaper, blur: body.wallpaperBlur })
+      return fake
+    },
+  })
+  let tree = await openThemeTab(render)
+  const range = (label) => findByClass(tree, 'dsa-set-range').find((node) => node.props['aria-label'] === label)
+  const readOf = (label) => {
+    const row = findByClass(tree, 'dsa-set-row').find((node) => texts({ children: node.children }).includes(label))
+    return findByClass(row, 'dsa-set-sec').map((node) => node.children.join(''))[0]
+  }
+  // 第一次：遮罩 → 40%（POST A 在飞）。
+  range('遮罩厚度').props.onPointerUp({ target: { value: '40' } })
+  // 第二次：模糊 → 6px（滑杆刻度是 48%）。B 比 A 新。
+  range('壁纸模糊').props.onPointerUp({ target: { value: '48' } })
+  assert.equal(gates.length, 2, `应该有两个待回包请求，实际 ${gates.length}`)
+  // **先让 B（新的）回来**，再让 A（旧的）回来 —— 这就是乱序。
+  gates[1].settle()
+  for (let i = 0; i < 40; i += 1) await Promise.resolve()
+  gates[0].settle()
+  for (let i = 0; i < 40; i += 1) await Promise.resolve()
+  tree = await render()
+  // 最终必须停在最后调好的那组值上：迟到的旧回包不许把 blur 拨回 0。
+  assert.equal(readOf('遮罩厚度'), '40%', `遮罩被旧回包改掉了：${readOf('遮罩厚度')}`)
+  assert.equal(readOf('壁纸模糊'), '48%', `模糊被旧回包盖回默认值了：${readOf('壁纸模糊')}`)
+})
+
+await check('主题壁纸：换预设不清三根滑杆（用户调好的值要留在盘上）', async () => {
+  // 这条盯的是**磁盘**那一侧：`paintNow` 与 POST 载荷都不许再把三根滑杆写成 'auto'。
+  // 宿主把 'auto' 当成"删除这个键"，所以清一次 = 用户调的值真没了（刷新也回不来）。
+  const { render, calls } = await loadClient({ status: themeStatus({ scrim: 0.4, blur: 6, saturate: 1.5 }) })
+  const tree = await openThemeTab(render)
+  const frost = findAll(tree, 'dsa-set-preset').find((node) => texts({ children: node.children }).includes('亮'))
+  frost.props.onClick()
+  // ① POST 载荷里只有预设自己的键。
+  const post = calls.filter((call) => call.type === 'fetch' && call.init?.method === 'POST').pop()
+  const body = JSON.parse(post.init.body)
+  for (const key of ['wallpaperScrim', 'wallpaperBlur', 'wallpaperSaturate']) {
+    assert.ok(!(key in body), `换预设把 ${key} 写进了请求体：${post.init.body}`)
+  }
+  // ② 当场广播给背景层的那份配置里，三根滑杆仍是用户的数值（不是 'auto'、不是 0）。
+  const sync = calls.filter((call) => call.type === 'event' && call.name === 'dsa:wall-sync').pop()
+  assert.ok(sync, '换预设没有广播 dsa:wall-sync')
+  assert.equal(sync.detail.scrim, 0.4, `广播里遮罩变成了 ${sync.detail.scrim}`)
+  assert.equal(sync.detail.blur, 6, `广播里模糊变成了 ${sync.detail.blur}`)
+  assert.equal(sync.detail.saturate, 1.5, `广播里色彩浓度变成了 ${sync.detail.saturate}`)
 })
 
 await check('主题壁纸：让位变量必须带 !important（内核把令牌写成 body 内联样式）', async () => {
@@ -1874,6 +2174,13 @@ await check('主题壁纸：让位变量必须带 !important（内核把令牌�
   assert.match(css, /body\{background:transparent !important/, 'body 底色没放空')
   // html 上垫的是壁纸自己的代表色，而不是留空：掉层时退化成本色，不闪白。
   assert.match(css, /html\{background-color:#[0-9a-f]{6} !important/, 'html 没垫壁纸底色')
+  // 输入框 / @ 菜单必须接手成**带 α 的玻璃**：不接的话它们还是玻璃色（不透明），
+  // 壁纸在输入框底下完全看不见 —— 用户报的"输入框不透"就是这一行没接。
+  assert.match(css, /--dsw-specific-input-major:\s*rgba\(\d+, \d+, \d+, 0?\.\d+\)\s*!important/, `输入框底不是带 α 的玻璃：${css.slice(0, 200)}`)
+  assert.match(css, /--dsw-specific-menu:\s*rgba\(/, '@ 菜单底不是带 α 的玻璃')
+  assert.match(css, /--dsw-alias-button-floating-fill:\s*rgba\(/, '框内按钮没跟着玻璃化')
+  // 卡片（列/底栏那块实面）**不动**：它得托住正文，改成半透等于把正文交给壁纸。
+  assert.match(css, /--dsa-card:\s*#[0-9a-f]{6}/, '卡片底被改成了半透明 —— 正文会压在壁纸上')
   // 绝不碰字号的通道。
   assert.ok(!/font-size|font-family|--dsh-content-font-size/.test(css), `样式表里混进了排版变量：${css}`)
 })
