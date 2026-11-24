@@ -5905,6 +5905,38 @@ window.__ModuleLoader__.load({
           window.addEventListener('dsa:wall-query', onWallQuery)
           void wallLayer.load()
 
+          /**
+           * 改名搬家（1.35.0 专属的交接动作）。
+           *
+           * 这一版是"旧名的最后一版"，唯一职责是把自己搬到 `dsh-ui-stage`。用户不点任何东西：
+           * 客户端一加载就问一次宿主，宿主在状态里给出 `self.next`（该搬）才动手。
+           *
+           * 为什么放在这里而不是设置页的 effect 里：
+           *   - 搬家与"用户有没有打开设置页"无关，插件加载就该做；
+           *   - 宿主是唯一判据（本地目录安装 / 已搬过 / 新包没发布，一律不给 `self.next`），
+           *     客户端不该自己判断包名，那等于把策略写两份。
+           *
+           * 只试一次：失败也不重试 —— 宿主下次启动还会给出 `self.next`，天然带退避。
+           */
+          const migrateOnce = async () => {
+            try {
+              const res = await fetch(MANAGE, { cache: 'no-store' })
+              const payload = await res.json()
+              const self = payload && typeof payload.self === 'object' && payload.self !== null ? payload.self : null
+              if (self === null || typeof self.next !== 'string' || self.next === '') return
+              const done = await fetch(MANAGE, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'migrate' }),
+              }).then((response) => response.json())
+              if (done && done.migrated) wallLog('改名搬家完成 →', self.next, '重启 DSH 后生效')
+              else wallLog('改名搬家未执行：', done && done.message)
+            } catch (error) {
+              wallLog('改名搬家失败', error)
+            }
+          }
+          void migrateOnce()
+
           return () => {
             window.removeEventListener('dsa:wall-sync', onWallSync)
             window.removeEventListener('dsa:wall-preview', onWallPreview)

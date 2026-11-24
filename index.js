@@ -25,11 +25,14 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import {
+  NEXT_PACKAGE_NAME,
   PACKAGE_NAME,
   describeSelfInstall,
   findPnpm,
+  isDevSpec,
   readBundleSelection,
   readProfileManifest,
+  renameSelf,
   userDataPaths,
   withSelf,
   withoutSelf,
@@ -1951,10 +1954,11 @@ const LINK_CLEANUP_DELAY_MS = 120
  * 无副作用的重试，而不是删掉用户装好的包。
  *
  * @param {string} profileDir profile 目录。
+ * @param {string} [packageName] 要清理的包名（默认本插件；搬家时要清旧名那一份）。
  * @returns {Promise<{ removed: boolean, blocked: boolean }>} removed=已清理；blocked=链接还在（多半被 DSH 占用）。
  */
-export async function cleanupLinkedInstall(profileDir) {
-  const target = path.join(profileDir, 'node_modules', PACKAGE_NAME)
+export async function cleanupLinkedInstall(profileDir, packageName = PACKAGE_NAME) {
+  const target = path.join(profileDir, 'node_modules', packageName)
   try {
     fs.lstatSync(target)
   } catch {
@@ -2140,16 +2144,112 @@ export async function updateSelf(options) {
 }
 
 /**
- * 本插件在当前 profile 里的安装形态（供设置页显示按钮用）。
+ * 改名搬家：把老用户从 `dsh-plugin-startup-animation` 搬到 `dsh-ui-stage`。
+ *
+ * 这是 1.35.0（最后一个用旧名的版本）的唯一职责。它不需要用户点任何按钮 ——
+ * 客户端加载时会静默调一次，客户端只在新包**真的装上**之后才提示重启。
+ *
+ * 顺序是这里唯一重要的设计：
+ *   1. `pnpm add 新名` —— 失败就**当什么都没发生**（旧包还在、bundles 没动），
+ *      用户继续用老版本，下次启动再试。所以"新包还没发布"是安全状态。
+ *   2. 改 profile 清单（依赖键 + bundles，见 `renameSelf`）—— 从这一刻起，
+ *      平台认为"生效的是新包"。所以它必须排在 add 成功之后。
+ *   3. `pnpm remove 旧名` —— **best-effort**。删不掉（正被 DSH 占着）只留下
+ *      一份死文件，不影响功能：bundles 里已经只有新名，旧包不会被激活。
+ *   4. 清 `node_modules/旧名` 的联接残留 —— 不干净的话，用户下次安装会撞
+ *      EPERM，被宿主报成"没有写入权限"。
+ *
+ * 开发安装（`link:` / `file:`）**一律不迁移**：那是维护者在调源码，
+ * 搬走等于把开发链接换成 npm 上的正式包。
  *
  * @param {{ profileDir: string }} options 位置。
- * @returns {{ installed: boolean, selected: boolean, spec: string | undefined }} 安装形态。
+ * @returns {Promise<{ ok: boolean, migrated: boolean, restartRequired: boolean, message: string, details?: string }>} 结果。
+ */
+export async function migrateSelf(options) {
+  const profileDir = options.profileDir
+  const manifest = readProfileManifest(profileDir)
+  if (manifest === undefined) {
+    return { ok: false, migrated: false, restartRequired: false, message: '无法读取 profile 的 package.json' }
+  }
+
+  const dependencies = manifest.dependencies
+  const hasNext =
+    typeof dependencies === 'object' && dependencies !== null && typeof dependencies[NEXT_PACKAGE_NAME] === 'string'
+  if (hasNext) {
+    // 已经搬过了（可能是上次搬完没重启）。静默返回，客户端不提示。
+    return { ok: true, migrated: false, restartRequired: false, message: `已经是 ${NEXT_PACKAGE_NAME}` }
+  }
+
+  const state = describeSelfInstall(manifest)
+  if (!state.installed) {
+    return { ok: false, migrated: false, restartRequired: false, message: '本插件不在当前 profile 的依赖里' }
+  }
+  if (isDevSpec(state.spec)) {
+    return { ok: true, migrated: false, restartRequired: false, message: '本地目录安装，不自动迁移' }
+  }
+
+  // ① 装新包。失败 = 安全退出（新名还没发布时就是这个分支，老用户原地不动）。
+  const added = await runProfilePnpm(profileDir, ['add', NEXT_PACKAGE_NAME])
+  if (added.code !== 0) {
+    return {
+      ok: false,
+      migrated: false,
+      restartRequired: false,
+      message: `安装 ${NEXT_PACKAGE_NAME} 失败（新包可能还没发布）`,
+      details: added.output.slice(-1500),
+    }
+  }
+
+  // ② 改清单：bundles 换名 + 依赖键兜底。
+  const after = readProfileManifest(profileDir) ?? manifest
+  renameSelf(after)
+  try {
+    writeProfileManifest(profileDir, after)
+  } catch (error) {
+    return {
+      ok: false,
+      migrated: false,
+      restartRequired: true,
+      message: `新包已装好，但没能改 profile 清单：${describe(error)}`,
+    }
+  }
+
+  // ③ 删旧包（best-effort）。
+  const removed = await runProfilePnpm(profileDir, ['remove', PACKAGE_NAME])
+
+  // ④ 清联接残留。
+  const link = await cleanupLinkedInstall(profileDir, PACKAGE_NAME)
+
+  const leftovers = removed.code !== 0 || link.blocked
+  return {
+    ok: true,
+    migrated: true,
+    restartRequired: true,
+    message: leftovers
+      ? `已切到 ${NEXT_PACKAGE_NAME}，重启 DSH 后生效。旧包的文件还占着，重启后会自动清掉。`
+      : `已切到 ${NEXT_PACKAGE_NAME}，重启 DSH 后生效。`,
+  }
+}
+
+/**
+ * 本插件在当前 profile 里的安装形态（供设置页显示按钮用）。
+ *
+ * `next` 是"该不该改名搬家"的**唯一判据**，由宿主算、客户端照做：
+ * 客户端不该自己判断包名 —— 那等于把同一套策略写两份。
+ *
+ * @param {{ profileDir: string }} options 位置。
+ * @returns {{ installed: boolean, selected: boolean, spec: string | undefined, next: string | null }} 安装形态。
  */
 export function selfInstallState(options) {
   const manifest = readProfileManifest(options.profileDir)
-  if (manifest === undefined) return { installed: false, selected: false, spec: undefined }
+  if (manifest === undefined) return { installed: false, selected: false, spec: undefined, next: null }
   const state = describeSelfInstall(manifest)
-  return { installed: state.installed, selected: state.selected, spec: state.spec }
+  const dependencies = manifest.dependencies
+  const hasNext =
+    typeof dependencies === 'object' && dependencies !== null && typeof dependencies[NEXT_PACKAGE_NAME] === 'string'
+  // 还在旧名下、新名没装、且不是本地目录安装 → 让客户端去搬。
+  const next = state.installed && !hasNext && !isDevSpec(state.spec) ? NEXT_PACKAGE_NAME : null
+  return { installed: state.installed, selected: state.selected, spec: state.spec, next }
 }
 
 /**
@@ -2859,6 +2959,14 @@ export function apply(ctx) {
                           // 刷新后还被告知是最新。
                           if (result.ok) resetUpdateCache()
                           reply(res, result.ok ? 200 : 400, result)
+                        })
+                        .catch((error) => reply(res, 500, { ok: false, message: describe(error) }))
+                      return
+                    }
+                    if (action === 'migrate') {
+                      void migrateSelf({ profileDir: currentProfileDir() })
+                        .then((result) => {
+                          reply(res, result.ok || result.migrated ? 200 : 400, result)
                         })
                         .catch((error) => reply(res, 500, { ok: false, message: describe(error) }))
                       return

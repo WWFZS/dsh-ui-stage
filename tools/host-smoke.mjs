@@ -622,6 +622,17 @@ console.log('  ok   GET ?cfg=1 只回配置、不扫素材库')
   const put = await call(MANAGE_ROUTE, { method: 'PUT' })
   assert.equal(put.status, 405, `PUT 应是 405，实际 ${put.status}`)
   console.log('  ok   manage：非法方法 405')
+
+  // ── 改名搬家：本地目录安装（link:）必须**拒绝搬** ──
+  // 这是 1.35.0 的交接动作。搬走等于把 `link:D:/src` 换成 npm 上的正式包，
+  // 维护者下次改源码就不生效了 —— 所以 dev 安装是硬拒绝，且状态里不能给出"该搬"。
+  const selfStatus = (await call(MANAGE_ROUTE)).json()
+  assert.equal(selfStatus.self.next, null, '本地目录安装不该被标记为"该搬家"')
+  const migrateDev = await postJson({ action: 'migrate' })
+  assert.equal(migrateDev.status, 200, migrateDev.body.toString())
+  assert.equal(migrateDev.json().migrated, false, '本地目录安装被搬走了')
+  assert.match(String(migrateDev.json().message), /本地目录/, `搬家没说明为什么不动：${migrateDev.json().message}`)
+  console.log('  ok   manage：改名搬家对 link: 安装是拒绝的，且不给 self.next')
 }
 
 await new Promise((resolve) => server.close(resolve))

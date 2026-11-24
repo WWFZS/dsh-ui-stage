@@ -1579,6 +1579,29 @@ await check('点更新 → POST action=update', async () => {
   assert.equal(sent.action, 'update', `动作不对：${String(post.init.body)}`)
 })
 
+await check('改名交接：宿主给出 self.next 就静默搬一次；没有就一次都不打', async () => {
+  // 1.35.0 是旧名的最后一版，它要把老用户搬到 dsh-ui-stage。
+  // 判定权在宿主（`self.next`），客户端只照做 —— 同一套策略不写两份。
+  // 挂在"插件加载"上而不是设置页的 effect 里：搬家和"有没有打开设置页"无关。
+  const migratePosts = (calls) =>
+    calls.filter(
+      (call) => call.type === 'fetch' && call.init?.method === 'POST' && String(call.init?.body ?? '').includes('"migrate"'),
+    )
+  const withNext = await loadClient({
+    status: { ok: true, version: '1.35.0' },
+    self: { ok: true, installed: true, selected: true, spec: '^1.34.0', next: 'dsh-ui-stage' },
+    selfResult: { ok: true, migrated: true, restartRequired: true, message: '已切到 dsh-ui-stage' },
+  })
+  for (let i = 0; i < 12; i += 1) await Promise.resolve()
+  assert.equal(migratePosts(withNext.calls).length, 1, `搬家请求发了 ${migratePosts(withNext.calls).length} 次（应只发一次）`)
+
+  // 没有 self.next（本地目录安装 / 已搬过 / 新包还没发布）→ 一次都不许打，
+  // 否则每次启动都在用户机器上白跑一遍 pnpm。
+  const plain = await loadClient({ status: { ok: true, version: '2.0.0' }, self: { ok: true, installed: true, selected: true } })
+  for (let i = 0; i < 12; i += 1) await Promise.resolve()
+  assert.equal(migratePosts(plain.calls).length, 0, '没有搬家指令却发了请求')
+})
+
 console.log('== 更新公告 ==')
 
 /** 一份按真实 Release 写法排版的正文：标题、分节、加粗、代码块、安装链接都在里面。 */

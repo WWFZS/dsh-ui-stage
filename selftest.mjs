@@ -12,6 +12,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  NEXT_PACKAGE_NAME,
+  PACKAGE_NAME,
+  isDevSpec,
+  renameSelf,
+} from './lib/self-manage.mjs'
+import {
   assertBuiltinFile,
   assertUploadedFile,
   clampDurationSec,
@@ -929,6 +935,57 @@ await check('cleanupLinkedInstall：只删链接，绝不动真实目录与目�
   assert.ok(fs.existsSync(path.join(source, 'index.js')), '删联接时连带删了目标目录')
 
   fs.rmSync(profile, { recursive: true, force: true })
+})
+
+await check('改名搬家：bundles 里旧名原地换成新名，依赖键两边都在时删旧的', () => {
+  // 场景：pnpm add 了新名、remove 旧名失败了 —— 清单里两个依赖键都在。
+  const manifest = {
+    dependencies: { [PACKAGE_NAME]: '^1.35.0', [NEXT_PACKAGE_NAME]: '^2.0.0', 'other-pkg': '1.0.0' },
+    dsh: { profile: { bundles: ['billion-context', PACKAGE_NAME, 'dsh-ops'] } },
+  }
+  const result = renameSelf(manifest)
+  assert.equal(result.changed, true, '没报告改动')
+  assert.equal(PACKAGE_NAME in manifest.dependencies, false, '旧依赖键没删掉')
+  assert.equal(manifest.dependencies[NEXT_PACKAGE_NAME], '^2.0.0', '新依赖键被改坏了')
+  assert.equal(manifest.dependencies['other-pkg'], '1.0.0', '动了别的包')
+  // 新名必须**顶在旧名原来的位置**：bundles 顺序就是加载顺序，换名不该把它挪到最后。
+  assert.deepEqual(manifest.dsh.profile.bundles, ['billion-context', NEXT_PACKAGE_NAME, 'dsh-ops'])
+  assert.equal(renameSelf(manifest).changed, false, '再跑一次应该是幂等的')
+})
+
+await check('改名搬家：旧名不在 bundles 里时不去凭空加新名', () => {
+  const manifest = { dependencies: { [NEXT_PACKAGE_NAME]: '^2.0.0' }, dsh: { profile: { bundles: ['dsh-ops'] } } }
+  const result = renameSelf(manifest)
+  assert.equal(result.changed, false, '用户本来没启用它，不该被塞回列表')
+  assert.deepEqual(manifest.dsh.profile.bundles, ['dsh-ops'])
+})
+
+await check('isDevSpec：本地目录安装不参与自动改名', () => {
+  for (const spec of ['link:D:/x', 'file:../x', 'portal:/x', 'workspace:*']) {
+    assert.equal(isDevSpec(spec), true, `${spec} 应判为本地安装`)
+  }
+  for (const spec of ['^1.34.0', '1.35.0', 'npm:dsh-plugin-startup-animation@1.35.0', undefined, '']) {
+    assert.equal(isDevSpec(spec), false, `${String(spec)} 不该判为本地安装`)
+  }
+})
+
+await check('selfInstallState.next：只在"旧名 + 非本地安装 + 新名未装"时给出', async () => {
+  const { selfInstallState } = await import('./index.js')
+  const make = (dependencies) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-next-'))
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ dependencies, dsh: { profile: { bundles: [PACKAGE_NAME] } } }),
+    )
+    return dir
+  }
+  const npmDir = make({ [PACKAGE_NAME]: '^1.34.0' })
+  assert.equal(selfInstallState({ profileDir: npmDir }).next, NEXT_PACKAGE_NAME, '正常安装应该给出搬家目标')
+  const linkDir = make({ [PACKAGE_NAME]: 'link:D:/DeepSeek启动动画' })
+  assert.equal(selfInstallState({ profileDir: linkDir }).next, null, '本地目录安装不该被安排搬家')
+  const doneDir = make({ [PACKAGE_NAME]: '^1.35.0', [NEXT_PACKAGE_NAME]: '^2.0.0' })
+  assert.equal(selfInstallState({ profileDir: doneDir }).next, null, '已经装了新名还让人搬')
+  for (const dir of [npmDir, linkDir, doneDir]) fs.rmSync(dir, { recursive: true, force: true })
 })
 
 console.log('== 宠物包 ==')
