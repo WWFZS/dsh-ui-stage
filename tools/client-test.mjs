@@ -544,7 +544,8 @@ await check('渲染出标题、开关与三个分类页签', async () => {
   const { render } = await loadClient()
   const tree = await render()
   const all = texts(tree)
-  assert.ok(all.includes('开机动画'), `没有标题：${all.join(' | ')}`)
+  // 页头是插件的名字（2.0.1 起叫界面舞台），不再是「开机动画」——那只是其中一块功能。
+  assert.ok(all.includes('界面舞台'), `没有标题：${all.join(' | ')}`)
   assert.ok(all.includes('显示开机动画'), '没有总开关')
   assert.ok(all.includes('MP4') && all.includes('壁纸') && all.includes('音频'), '三个分类页签不齐')
 })

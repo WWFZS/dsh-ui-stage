@@ -42,6 +42,8 @@ const SECONDS_OVERRIDE = new Map([
   ['剑一', 14],
   ['薰衣草花语-等你爱我', 24],
   ['少司缘', 16],
+  // 15.1 秒的整段编舞，切到 8 秒动作就断在半拍上。
+  ['dsh-舞动', 15],
 ])
 const force = process.argv.includes('--force')
 
@@ -52,7 +54,16 @@ const force = process.argv.includes('--force')
  * 但有的素材本身就是在说话（带对白/旁白的那种），去掉音轨等于把内容删了 ——
  * 这类必须保留。按文件名列在这里，重跑构建时不会被无声抹掉。
  */
-const KEEP_AUDIO = new Set(['dsh-大肥鱼', '剑一', '薰衣草花语-等你爱我', '少司缘'])
+const KEEP_AUDIO = new Set([
+  'dsh-大肥鱼',
+  '剑一',
+  '薰衣草花语-等你爱我',
+  '少司缘',
+  // 三支 DeepSeek 宣传片：配乐是片子的一部分，静音播等于丢了半条内容。
+  'dsh-女仆',
+  'dsh-舞动',
+  'dsh-专业模式',
+])
 
 /** 用 ffmpeg 压一版网页友好的 faststart mp4（按素材决定是否保留音轨）。 */
 function transcode(source, target) {

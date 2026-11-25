@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Startup Animation",
-    "description": "Shows an animated full-screen startup screen while Harness boots. Click anywhere to skip; set your own video or image file as the startup animation."
+    "title": "UI Stage",
+    "description": "Boot animation, appearance theme and desktop pets in one plugin: a full-screen animation covers the loading page until the app is ready, the same assets can sit behind the UI as a wallpaper (scrim / blur / saturation), and desktop pets float on screen. Ships a built-in library and accepts your own files."
   }
 }

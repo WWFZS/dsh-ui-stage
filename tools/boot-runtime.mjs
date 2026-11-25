@@ -459,6 +459,35 @@ await check('应用就绪 → 淡出（data-state=leaving）并移除节点', as
   assert.equal(overlay(), null, '淡出结束后覆盖层没有从 DOM 移除')
 })
 
+await check('淡出一开始就停解码（销毁全屏视频别和应用首次出画挤同一帧）', async () => {
+  // 老大反馈"进应用的一瞬间卡一下"：移除整棵覆盖层时视频还在播，销毁解码器 +
+  // 释放 GPU 纹理和应用首次出画撞在同一帧。修复是淡出开始就 pause。
+  const { clock, page, overlay } = await runBoot({
+    snapshot: {
+      enabled: true,
+      mode: 'video',
+      src: '/dsh-startup-animation/asset',
+      minMs: 0,
+      fadeMs: 200,
+      mediaMode: true,
+      durationSec: 0,
+    },
+  })
+  const video = page.body.descendants().find((node) => node.tagName === 'VIDEO')
+  video.readyState = 2
+  video.emit('loadeddata')
+  assert.equal(video.paused, false, '素材出画后本应在播')
+
+  simulateAppReady(page)
+  await clock.advance(150)
+  assert.equal(overlay()?.getAttribute('data-state'), 'leaving', '没有开始淡出')
+  assert.equal(video.paused, true, '淡出开始后视频没有立刻暂停')
+
+  // 收尾仍然要真的把节点移除（分两帧只是拆开开销，不是不移）。
+  await clock.advance(700)
+  assert.equal(overlay(), null, '收尾后覆盖层仍应从 DOM 移除')
+})
+
 await check('最短展示未到 → 不提前交接', async () => {
   // 最短展示从 startAt 起算：走 watchBoot 的 100ms tick 判就绪，所以"就绪"落在
   // 第一个 tick（100ms），交接要等到 minMs=3000 那一拍才触发。必须分小段推进 ——
@@ -529,6 +558,67 @@ await check('素材一帧都没来 → 退场要快，不按素材的 20 秒扣�
   simulateAppReady(page)
   await clock.advance(1000)
   assert.equal(overlay()?.getAttribute('data-state'), 'leaving', '素材没出画却还在按素材时长扣着')
+})
+
+await check('素材还在加载时应用先就绪 → 不许按 900ms 硬切（重启繁忙会误杀正常素材）', async () => {
+  // 这是"开机动画被跳过"的真凶场景：DSH 刚重启那几秒磁盘和 CPU 都在抢，
+  // 同一段本地视频空闲时 88ms 出帧、忙时可能 1–2 秒。旧逻辑只要"没出画"就用
+  // 900ms 上限交接，把**还在正常加载**的素材当成"挂了"直接淡出。
+  const { clock, page, overlay } = await runBoot({
+    snapshot: {
+      enabled: true,
+      mode: 'video',
+      src: '/dsh-startup-animation/asset',
+      minMs: 5000,
+      mediaMode: true,
+      durationSec: 5,
+      fadeMs: 100,
+    },
+  })
+  simulateAppReady(page)
+  // 1500ms 还没出画：仍在加载，不该已经让开。
+  await clock.advance(1500)
+  assert.notEqual(
+    overlay()?.getAttribute('data-state'),
+    'leaving',
+    '素材还在加载（没报错）就被 900ms 切掉了 —— 重启繁忙时会误杀正常素材',
+  )
+
+  // 出画：这一刻才起算最短展示。
+  const video = page.body.descendants().find((node) => node.tagName === 'VIDEO')
+  video.readyState = 2
+  video.emit('loadeddata')
+  assert.equal(overlay()?.getAttribute('data-media'), 'ok')
+
+  // 出画后 4 秒（< 5 秒最短展示）仍不该交接。
+  await clock.advance(4000)
+  assert.notEqual(overlay()?.getAttribute('data-state'), 'leaving', '出画后应按最短展示兜底')
+  // 越过 5 秒最短展示 → 交接。
+  await clock.advance(1200)
+  assert.equal(overlay()?.getAttribute('data-state'), 'leaving', '到了最短展示仍不交接')
+})
+
+await check('一直不出画也不报错 → 宽限期到点仍要放行（不能无限等）', async () => {
+  // 上一条的护栏：宽限不是无限。素材既不出画也不报错（例如路由卡住），
+  // 到 loadingGraceMs 就该让开，别让用户对着黑屏干等。
+  const { clock, page, overlay } = await runBoot({
+    snapshot: {
+      enabled: true,
+      mode: 'video',
+      src: '/dsh-startup-animation/asset',
+      minMs: 20000,
+      mediaMode: true,
+      durationSec: 20,
+      fadeMs: 100,
+    },
+  })
+  simulateAppReady(page)
+  await clock.advance(3200)
+  assert.equal(
+    overlay()?.getAttribute('data-state'),
+    'leaving',
+    '素材一直没来又没报错时，宽限期过了就该放行',
+  )
 })
 
 await check('出画后素材才挂 → 仍按配置的最短展示兜底（不许一闪而过）', async () => {

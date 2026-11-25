@@ -1,8 +1,8 @@
 {
   "name": "dsh-ui-stage",
-  "version": "2.0.0",
+  "version": "2.1.2",
   "type": "module",
-  "description": "Full-screen boot animation for DeepSeek Harness — an appearance theme and desktop pets in the same plugin. Ships built-in videos, wallpapers, voices and pets; accepts your own files. 全屏开机动画：盖住加载页直到应用就绪再淡出；同一套素材还能当外观主题铺在界面后面，另有桌面宠物浮在屏幕上。内置多套视频、壁纸、语音与宠物，也支持上传自己的文件自定义。",
+  "description": "开机动画 + 界面主题 + 桌面宠物，一个插件三件事：启动时全屏动画盖住加载页直到应用就绪再淡出；同一套素材还能当壁纸铺在界面后面（遮罩厚度 / 壁纸模糊 / 色彩浓度可调）；另有桌面宠物浮在屏幕上、可点可拖。内置视频、壁纸、语音与宠物素材库，也支持上传自己的文件。",
   "license": "MIT",
   "author": "dsh-ui-stage contributors",
   "repository": {

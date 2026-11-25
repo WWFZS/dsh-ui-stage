@@ -940,8 +940,8 @@ window.__ModuleLoader__.load({
 // <<< INLINE lib/wallpaper.mjs
 
     const DICT_ZH = {
-      nav: '启动动画',
-      title: '开机动画',
+      nav: '界面舞台',
+      title: '界面舞台',
       desc: '选好素材后点右上角「立即刷新」即可预览，无需重启。',
       enable: '显示开机动画',
       sound: '视频带声播放',
@@ -1049,8 +1049,8 @@ window.__ModuleLoader__.load({
     }
 
     const DICT_EN = {
-      nav: 'Startup Animation',
-      title: 'Startup animation',
+      nav: 'UI Stage',
+      title: 'UI Stage',
       desc: 'Pick your media, then click "Refresh now" (top right) to preview — no restart needed.',
       enable: 'Show the startup animation',
       sound: 'Play video with sound',

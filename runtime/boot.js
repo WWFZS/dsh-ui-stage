@@ -231,6 +231,15 @@
     var holdMs = num(cfg.holdMs, 20000, 2000, 120000)
     var holdGraceMs = num(cfg.holdGraceMs, 4000, 0, 30000)
     var noFrameMs = num(cfg.noFrameMs, 10000, 1500, 30000)
+    /**
+     * 素材"还在路上"（没出画、也没报错）时，交接最多再等多久。
+     *
+     * 为什么不能沿用 900ms：开机动画的素材请求发生在页面启动阶段，而 DSH 刚起来那几秒
+     * 磁盘和 CPU 都在抢（索引、插件加载、页面渲染）。同一段本地视频，空闲时 88ms 就出帧，
+     * 重启忙时可能 1–2 秒。旧的 900ms 硬切会把**正常素材**当成"挂了"，表现就是
+     * "开机动画一闪而过 / 直接被跳过"。这里给它 3 秒窗口，真挂了仍由 noFrameMs 兜底。
+     */
+    var loadingGraceMs = Math.min(noFrameMs, 3000)
     var endlessMs = num(cfg.endlessMs, 20000, 3000, 60000)
     // ── 两路声音彼此独立，各自由用户决定 ──
     //   ① 视频自带的音轨 → cfg.sound（"视频尝试带声播放"）
@@ -309,6 +318,9 @@
       mediaOk: false,
       // 素材第一帧出现的时刻；null = 尚未出画（覆盖层保持透明，原生启动页照常）。
       revealedAt: null,
+      // 素材是否已经**确定失败**（走过 mediaGone：解码/网络错了、或看门狗超时）。
+      // 与"还在加载"区分开 —— 交接时两者的等待策略不同，见 enter()。
+      mediaFailed: false,
       mediaNode: null,
       startAt: Date.now(),
       // 顺延时排的那一个 setTimeout 是否已经挂上（见 enter）。
@@ -455,7 +467,17 @@
       // 覆写 minMs = 900，结果媒体中途坏过一次，用户设的时长就永久变 0.9 秒。
       var revealed = state.revealedAt !== null
       var clockStart = revealed ? state.revealedAt : state.startAt
-      var limit = revealed || cfg.mediaMode !== true ? mediaMinMs : 900
+      // 素材还没出画时，"还要再等多久"分两种情形：
+      //   - 已确定失败（mediaGone 走过）→ 900ms 就退。这时屏幕上只剩很短的内置场景
+      //     或干脆透明（原生启动页在底下），按素材时长扣着用户毫无意义。
+      //   - 还在加载（没出画也没报错）→ 给 loadingGraceMs。重启瞬间出帧慢是常态，
+      //     按 900ms 硬切会把正常素材误判成挂了 —— 那是"开机动画被跳过"的真凶。
+      var limit =
+        revealed || cfg.mediaMode !== true
+          ? mediaMinMs
+          : state.mediaFailed
+            ? 900
+            : loadingGraceMs
       var elapsed = Date.now() - clockStart
       if (!voluntary && elapsed < limit) {
         // 顺延只排一次：watchBoot 每 100ms 也会调进来（就绪后每拍收口），
@@ -470,6 +492,18 @@
         return
       }
       state.leaving = true
+      // 淡出开始就停解码。
+      //
+      // 交接那一帧要做的事本来就重：拆掉整棵覆盖层（含一张全屏视频）、应用首次出画、
+      // 标题栏与遮罩还原。视频还在跑的话，销毁解码器 + 释放 GPU 纹理也挤进这一帧，
+      // 用户看到的就是"进应用的一瞬间卡一下"。画面此刻正在淡出，定格在最后一帧看不出来。
+      if (state.mediaNode !== null && state.mediaNode.pause) {
+        try {
+          state.mediaNode.pause()
+        } catch (error) {
+          /* 没在播就没得停 */
+        }
+      }
       // 淡出开始即还原：浮层随动画的消散一起显出应用自己的侧栏底色，衔接自然。
       restoreTitlebar()
       // 覆盖层要淡出了 —— 首帧遮罩必须一起摘，否则原生启动页被一直藏到动画消失。
@@ -498,19 +532,29 @@
         /* 只是日志 */
       }
       timer(function () {
+        // 收尾分两帧：先让合成器把这一层剔掉（visibility 不触发布局），下一帧再真正销毁节点。
+        // 一帧里同时做"销毁全屏视频""应用首次出画"是最容易掉帧的组合，拆开就顺了。
         try {
-          if (root.parentNode) root.parentNode.removeChild(root)
+          root.style.visibility = 'hidden'
+          root.style.pointerEvents = 'none'
         } catch (error) {
-          /* 已经不在了 */
+          /* 尽力而为 */
         }
-        if (state.mediaNode !== null) {
+        timer(function () {
           try {
-            state.mediaNode.pause && state.mediaNode.pause()
+            if (root.parentNode) root.parentNode.removeChild(root)
           } catch (error) {
-            /* 没在播的元素不需要 pause */
+            /* 已经不在了 */
           }
-        }
-        global.__DSA_DONE__ = true
+          if (state.mediaNode !== null) {
+            try {
+              state.mediaNode.pause && state.mediaNode.pause()
+            } catch (error) {
+              /* 没在播的元素不需要 pause */
+            }
+          }
+          global.__DSA_DONE__ = true
+        }, 50)
       }, ms + 140)
     }
 
@@ -735,6 +779,7 @@
     /** 素材任何一条失败路径都走这里：覆盖层保持透明（= 原生启动页），退场无痕。 */
     function mediaGone(reason) {
       if (state.leaving) return
+      state.mediaFailed = true
       root.setAttribute('data-media', 'gone')
       root.setAttribute('data-mode', 'css')
       state.mediaOk = false
