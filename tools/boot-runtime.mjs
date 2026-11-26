@@ -157,6 +157,8 @@ class StubElement {
     this.paused = true
     /** 起播计数：测试用来断言"什么时候放的音"。 */
     this.playCount = 0
+    /** 每次 play() 当时的 muted 快照：用来钉住"先静音起播、播起来再接声音"。 */
+    this.playMuted = []
   }
 
   /**
@@ -166,6 +168,7 @@ class StubElement {
    */
   play() {
     this.playCount += 1
+    this.playMuted.push(this.muted === true)
     this.paused = false
     return Promise.resolve()
   }
@@ -444,6 +447,52 @@ await check('素材挂掉 → data-media=gone（透明，回落原生启动页�
   video.emit('error')
   assert.equal(overlay().getAttribute('data-media'), 'gone')
   assert.equal(overlay().getAttribute('data-mode'), 'css', '挂掉后应回落到内置动画模式')
+})
+
+console.log('== 起播：先静音，播起来再接声音 ==')
+
+await check('要声音也先静音起播（不等音频设备，首帧才不会卡）', async () => {
+  // 带声 play() 得先打开音频输出设备：冷启动时首帧被它拖住（起播卡顿），
+  // 而且音频比画面晚启动（音画不同步）。所以第一次 play() 必须是静音的，
+  // 等播起来了再取消静音 —— 那时浏览器按当前进度接音频，画音自然对齐。
+  const { page } = await runBoot({
+    snapshot: {
+      enabled: true,
+      mode: 'video',
+      src: '/dsh-startup-animation/asset',
+      minMs: 0,
+      fadeMs: 100,
+      mediaMode: true,
+      durationSec: 3,
+      sound: true,
+    },
+  })
+  const video = page.body.descendants().find((node) => node.tagName === 'VIDEO')
+  assert.equal(video.playMuted[0], true, '第一次 play() 必须静音，否则会等音频设备')
+  // 播起来之后才把声音接上。
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(video.playMuted.includes(false), '起播成功后应再调一次带声 play() 把音频接上')
+})
+
+await check('不要声音时全程静音，不会多调一次 play', async () => {
+  const { page } = await runBoot({
+    snapshot: {
+      enabled: true,
+      mode: 'video',
+      src: '/dsh-startup-animation/asset',
+      minMs: 0,
+      fadeMs: 100,
+      mediaMode: true,
+      durationSec: 3,
+      sound: false,
+    },
+  })
+  const video = page.body.descendants().find((node) => node.tagName === 'VIDEO')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(
+    video.playMuted.every((muted) => muted === true),
+    'sound=false 时不该出现带声 play',
+  )
 })
 
 console.log('== 交接：应用就绪即淡出，节点移除 ==')

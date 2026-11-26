@@ -217,6 +217,8 @@ const OVERLAY_OPACITY = "getComputedStyle(document.querySelector('.dsa-root') ??
 const COVER = "getComputedStyle(document.documentElement, '::before').content"
 const SCENE_DISPLAY = "getComputedStyle(document.querySelector('.dsa-scene')).display"
 const SKIP_OPACITY = "getComputedStyle(document.querySelector('.dsa-skip')).opacity"
+/** 素材层是否提前建好合成层（起播首帧不卡的关键）。 */
+const MEDIA_WILL_CHANGE = "getComputedStyle(document.querySelector('.dsa-media')).willChange"
 const page = (state) => `http://127.0.0.1:${port}/boot-card.html?state=${state}`
 
 console.log('== 动画挂上就藏掉宿主原生启动卡 ==')
@@ -261,6 +263,20 @@ await check('素材未出画（loading）→ 覆盖层不透明', async () => {
 
 await check('素材挂掉（gone）→ 覆盖层透明', async () => {
   assert.equal(await evaluate(page('gone'), OVERLAY_OPACITY), '0')
+})
+
+console.log('== 素材层：起播不能卡（提前建合成层）==')
+
+await check('素材层声明 will-change: opacity —— 首帧纹理与合成层在透明期就备好', async () => {
+  // 素材层出画前是 opacity:0，浏览器会跳过它的绘制，视频首帧从不被上传成纹理。
+  // 等到 data-media="ok" 那一刻，建层 + 上传纹理 + 光栅化渐变遮罩 + 解码首帧
+  // 全挤在同一帧上 —— 就是"起播那一下明显卡顿"。
+  // will-change 让浏览器提前把层建好。这条断言钉住它，别被当成无用属性删掉。
+  const value = String(await evaluate(page('ok'), MEDIA_WILL_CHANGE))
+  assert.ok(
+    value.includes('opacity'),
+    `will-change 应包含 opacity（实际得到 "${value}"）—— 删掉它会让开机动画起播重新出现卡顿`,
+  )
 })
 
 console.log('== 首帧遮罩（覆盖层还没来得及挂上）==')

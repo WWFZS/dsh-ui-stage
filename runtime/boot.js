@@ -876,9 +876,11 @@
       video.preload = 'auto'
       video.loop = true // 覆盖"等待"而不是"播完"：启动可能比片子长。
       video.volume = volume
-      video.muted = !wantSound
-      video.defaultMuted = !wantSound
-      if (!wantSound) video.setAttribute('muted', '')
+      // 一律静音初始化。起播要的正是"不碰音频设备也能立刻 play"——见下方起播说明。
+      // 用户要声音的话，由 attachSound() 在 play() 成功之后接上。
+      video.muted = true
+      video.defaultMuted = true
+      video.setAttribute('muted', '')
       video.setAttribute('aria-hidden', 'true')
       state.mediaNode = video
 
@@ -929,17 +931,28 @@
       video.src = src
 
       /**
-       * 起播：**先试带声音**（桌面 Electron 默认允许），被拒才退回静音并亮出声音开关。
-       * 未静音的 play() 也可能既不 resolve 也不 reject —— 给一个 1.2 秒窗口兜底。
+       * 起播：**一律先静音**，让画面第一时间动起来；要声音的话，等播起来之后再接。
+       *
+       * 为什么不再"先试带声音"（2.1.4 起改）—— 带声 play() 得先打开音频输出设备，
+       * 冷启动时这一步并不便宜，老大实测到两个症状：
+       *   ① 首帧明明已经就位，却被音频设备初始化拖住，画面静止几百毫秒才开始动
+       *      —— 就是"起播那一下卡"；
+       *   ② 音频比画面晚启动，于是音画错位 —— 就是"声音和动画不同步"。
+       *
+       * 静音播放完全不碰音频设备，play() 立刻 resolve，首帧该出就出。
+       * 之后再取消静音时，浏览器按**当前**播放进度接上音频（不是从 0 重播），
+       * 音画自然对齐。
+       *
+       * 代价：冷启动开头几十毫秒无声。相比"卡顿 + 不同步"，这个代价划算。
        */
-      var fallbackToMuted = function (reason) {
+      var backToMuted = function (reason) {
         try {
           video.muted = true
           video.setAttribute('muted', '')
         } catch (error) {
           /* 尽力而为 */
         }
-        // 记一条：用户报"启动动画没声音"时，这行能直接区分"被策略拦下"和"素材本来就没音轨"。
+        // 记一条：用户报"启动动画没声音"时，这行能区分"被策略拦下"和"素材本来就没音轨"。
         try {
           if (global.console && global.console.info) {
             global.console.info('[startup-animation] sound muted: ' + reason)
@@ -950,48 +963,47 @@
         soundButton.setAttribute('data-visible', '1')
         setHint(COPY.muted)
         var retry = video.play()
-        if (retry && typeof retry.catch === 'function') {
-          retry.catch(function () {
-            mediaGone('muted-play-refused')
+        if (retry && typeof retry.catch === 'function') retry.catch(function () {})
+      }
+
+      /** 画面已经在走了，把音频接上；接不上就退回静音并亮出声音开关。 */
+      var attachSound = function () {
+        try {
+          video.muted = false
+        } catch (error) {
+          return
+        }
+        var again
+        try {
+          again = video.play()
+        } catch (error) {
+          again = undefined
+        }
+        if (again && typeof again.then === 'function') {
+          again.then(function () {}, function () {
+            backToMuted('refused')
           })
         }
       }
 
-      if (!wantSound) {
-        var mutedPlay = video.play()
-        if (mutedPlay && typeof mutedPlay.catch === 'function') {
-          mutedPlay.catch(function () {
+      var started
+      try {
+        started = video.play()
+      } catch (error) {
+        started = undefined
+      }
+      if (started && typeof started.then === 'function') {
+        started.then(
+          function () {
+            if (wantSound) attachSound()
+          },
+          function () {
             mediaGone('muted-play-refused')
-          })
-        }
-      } else {
-        var soundWindow = timer(function () {
-          fallbackToMuted('timeout')
-        }, 1200)
-        var settle = function (ok) {
-          global.clearTimeout(soundWindow)
-          if (!ok) fallbackToMuted('refused')
-        }
-        var started
-        try {
-          started = video.play()
-        } catch (error) {
-          started = undefined
-        }
-        if (started && typeof started.then === 'function') {
-          started.then(
-            function () {
-              settle(true)
-            },
-            function () {
-              settle(false)
-            },
-          )
-        } else if (started === undefined) {
-          settle(false)
-        } else {
-          settle(true)
-        }
+          },
+        )
+      } else if (started === undefined) {
+        // play() 同步抛错：这条素材线不行了。
+        mediaGone('muted-play-refused')
       }
     }
 

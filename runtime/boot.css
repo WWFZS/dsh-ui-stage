@@ -122,6 +122,19 @@ html[data-dsa-cover] [data-dsh-boot] {
      不会出现"黑一下就跳画面"的硬切。 */
   opacity: 0;
   transition: opacity 260ms ease;
+  /* 为什么必须有 will-change ：
+   *
+   * 元素是 opacity:0 时，浏览器会把"绘制"整个跳过（省性能的常规优化）。于是视频
+   * 明明已经在后面播了，首帧却**从没被上传成 GPU 纹理**、这一层也**从没被合成过**。
+   * 等到 data-media="ok" 那一刻，四件事一起砸在同一帧上：
+   *   ① 新建全屏合成层  ② 上传首帧纹理  ③ 光栅化 .dsa-media::after 的渐变遮罩
+   *   ④ 视频解码出首帧
+   * 用户看到的就是"起播那一下明显卡顿"（老大实测《dsh-舞动》复现）。
+   *
+   * 提前声明 will-change: opacity，浏览器在**挂载时**（此时仍透明、屏幕上还是内置徽标）
+   * 就把层建好、纹理备好，把开销挪到没人看得见的时候。元素随覆盖层一起移除，不会常驻占显存。
+   */
+  will-change: opacity;
 }
 
 .dsa-root[data-media="ok"] .dsa-media {
